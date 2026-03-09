@@ -71,6 +71,7 @@ enum Phase {
 enum AudioCue {
     Key,
     Eat,
+    Boom,
     GameOver,
 }
 
@@ -85,6 +86,7 @@ struct Game {
     direction: Direction,
     queued_direction: Option<Direction>,
     food: IVec2,
+    bombs: Vec<IVec2>,
     phase: Phase,
     score: u32,
     best_score: u32,
@@ -99,6 +101,7 @@ struct SoundBank {
     music: Option<Sound>,
     key: Option<Sound>,
     eat: Option<Sound>,
+    boom: Option<Sound>,
     game_over: Option<Sound>,
 }
 
@@ -109,6 +112,7 @@ impl Game {
             direction: Direction::Right,
             queued_direction: None,
             food: ivec2(0, 0),
+            bombs: Vec::new(),
             phase: Phase::Title,
             score: 0,
             best_score: 0,
@@ -136,6 +140,7 @@ impl Game {
         self.food_flash = 0.0;
         self.death_flash = 0.0;
         self.food = self.spawn_food();
+        self.bombs = self.spawn_bombs(initial_bomb_count(self.score));
     }
 
     fn start_round(&mut self) {
@@ -170,6 +175,7 @@ impl Game {
             ivec2(14, 14),
         ];
         self.food = ivec2(18, 8);
+        self.bombs = vec![ivec2(7, 7), ivec2(18, 16), ivec2(8, 17)];
     }
 
     fn configure_showcase_game_over(&mut self) {
@@ -193,6 +199,7 @@ impl Game {
             ivec2(10, 5),
         ];
         self.food = ivec2(15, 14);
+        self.bombs = vec![ivec2(12, 10), ivec2(16, 7), ivec2(5, 15)];
     }
 
     fn spawn_food(&self) -> IVec2 {
@@ -201,9 +208,36 @@ impl Game {
                 macroquad::rand::gen_range(0, GRID_SIZE),
                 macroquad::rand::gen_range(0, GRID_SIZE),
             );
-            if !self.snake.contains(&candidate) {
+            if !self.snake.contains(&candidate) && !self.bombs.contains(&candidate) {
                 return candidate;
             }
+        }
+    }
+
+    fn spawn_bombs(&self, count: usize) -> Vec<IVec2> {
+        let mut bombs = Vec::with_capacity(count);
+        while bombs.len() < count {
+            let candidate = ivec2(
+                macroquad::rand::gen_range(0, GRID_SIZE),
+                macroquad::rand::gen_range(0, GRID_SIZE),
+            );
+            if !self.snake.contains(&candidate)
+                && candidate != self.food
+                && !bombs.contains(&candidate)
+            {
+                bombs.push(candidate);
+            }
+        }
+        bombs
+    }
+
+    fn sync_bombs(&mut self) {
+        let target = target_bomb_count(self.score);
+        if self.bombs.len() < target {
+            let mut additions = self.spawn_bombs(target - self.bombs.len());
+            self.bombs.append(&mut additions);
+        } else if self.bombs.len() > target {
+            self.bombs.truncate(target);
         }
     }
 
@@ -309,6 +343,7 @@ impl Game {
 
         let next_head = self.snake[0] + self.direction.vector();
         let will_grow = next_head == self.food;
+        let hit_bomb = self.bombs.contains(&next_head);
         let body_to_check = if will_grow {
             self.snake.len()
         } else {
@@ -331,6 +366,13 @@ impl Game {
             return Some(AudioCue::GameOver);
         }
 
+        if hit_bomb {
+            self.best_score = self.best_score.max(self.score);
+            self.phase = Phase::GameOver;
+            self.death_flash = 0.8;
+            return Some(AudioCue::Boom);
+        }
+
         self.snake.insert(0, next_head);
 
         if will_grow {
@@ -339,6 +381,7 @@ impl Game {
             self.step_delay = speed_for_score(self.score);
             self.food_flash = 0.3;
             self.food = self.spawn_food();
+            self.sync_bombs();
             return Some(AudioCue::Eat);
         } else {
             self.snake.pop();
@@ -354,6 +397,7 @@ impl SoundBank {
             music: load_generated_sound(generate_music_loop()).await,
             key: load_generated_sound(generate_key_sound()).await,
             eat: load_generated_sound(generate_eat_sound()).await,
+            boom: load_generated_sound(generate_boom_sound()).await,
             game_over: load_generated_sound(generate_game_over_sound()).await,
         }
     }
@@ -394,6 +438,17 @@ impl SoundBank {
                     );
                 }
             }
+            AudioCue::Boom => {
+                if let Some(sound) = &self.boom {
+                    play_sound(
+                        sound,
+                        PlaySoundParams {
+                            looped: false,
+                            volume: 0.72,
+                        },
+                    );
+                }
+            }
             AudioCue::GameOver => {
                 if let Some(sound) = &self.game_over {
                     play_sound(
@@ -412,6 +467,14 @@ impl SoundBank {
 fn speed_for_score(score: u32) -> f32 {
     let food_eaten = score as f32 / 10.0;
     (BASE_STEP_DELAY - food_eaten * 0.006).max(MIN_STEP_DELAY)
+}
+
+fn initial_bomb_count(score: u32) -> usize {
+    target_bomb_count(score).max(1)
+}
+
+fn target_bomb_count(score: u32) -> usize {
+    (1 + (score / 40) as usize).min(5)
 }
 
 fn read_direction_input() -> Option<Direction> {
@@ -496,6 +559,7 @@ fn draw_scene(game: &Game) {
 
     draw_grid(&layout, time);
     draw_food(&layout, game, time);
+    draw_bombs(&layout, game, time);
     draw_snake(&layout, game, time);
     draw_panel(&layout, game);
     draw_overlay(&layout, game, time);
@@ -703,6 +767,52 @@ fn draw_food(layout: &Layout, game: &Game, time: f32) {
     );
 }
 
+fn draw_bombs(layout: &Layout, game: &Game, time: f32) {
+    let cell = layout.grid.w / GRID_SIZE as f32;
+
+    for (index, bomb) in game.bombs.iter().enumerate() {
+        let center = vec2(
+            layout.grid.x + (bomb.x as f32 + 0.5) * cell,
+            layout.grid.y + (bomb.y as f32 + 0.5) * cell,
+        );
+        let pulse = 0.85 + ((time * 4.5) + index as f32 * 0.7).sin() * 0.08;
+        let shell = cell * 0.26 * pulse;
+
+        draw_circle(
+            center.x,
+            center.y,
+            cell * 0.44,
+            Color::new(1.0, 0.22, 0.12, 0.10),
+        );
+        draw_circle(
+            center.x,
+            center.y,
+            shell,
+            Color::new(0.86, 0.12, 0.09, 0.98),
+        );
+        draw_circle(
+            center.x,
+            center.y,
+            cell * 0.12,
+            Color::new(0.15, 0.02, 0.03, 1.0),
+        );
+        draw_line(
+            center.x - cell * 0.08,
+            center.y - cell * 0.24,
+            center.x + cell * 0.12,
+            center.y - cell * 0.34,
+            2.0,
+            Color::new(1.0, 0.78, 0.28, 0.95),
+        );
+        draw_circle(
+            center.x + cell * 0.15,
+            center.y - cell * 0.38,
+            cell * 0.05,
+            Color::new(1.0, 0.86, 0.32, 0.95),
+        );
+    }
+}
+
 fn draw_panel(layout: &Layout, game: &Game) {
     let left = layout.panel.x + 26.0;
     let mut y = layout.panel.y + 38.0;
@@ -783,6 +893,7 @@ fn draw_panel(layout: &Layout, game: &Game) {
     let stats = [
         ("Status", game.status_label().to_string()),
         ("Heading", game.direction.label().to_string()),
+        ("Bombs", game.bombs.len().to_string()),
         (
             "Speed",
             format!("{:.1}x", BASE_STEP_DELAY / game.step_delay),
@@ -850,9 +961,9 @@ fn draw_panel(layout: &Layout, game: &Game) {
 
     let footer = match game.phase {
         Phase::Title => "Start moving to launch immediately.",
-        Phase::Playing => "Eat the ember core and keep the line clean.",
+        Phase::Playing => "Eat the ember core and stay clear of bombs.",
         Phase::Paused => "Paused. Resume with Enter, Space, or Esc.",
-        Phase::GameOver => "Collision detected. Restart with R or Enter.",
+        Phase::GameOver => "Crash or bomb hit. Restart with R or Enter.",
     };
 
     let footer_y = layout.panel.y + layout.panel.h - 42.0;
@@ -872,7 +983,7 @@ fn draw_overlay(layout: &Layout, game: &Game, time: f32) {
     let (title, body) = match game.phase {
         Phase::Title => (
             "Press Enter",
-            "Use WASD or arrow keys to start.\nCollect food, avoid walls, avoid your own trail.",
+            "Use WASD or arrow keys to start.\nCollect food, dodge bombs, and avoid your own trail.",
         ),
         Phase::Paused => (
             "Paused",
@@ -999,6 +1110,25 @@ fn generate_eat_sound() -> Vec<u8> {
         let tone = (std::f32::consts::TAU * freq * t).sin();
         let sparkle = (std::f32::consts::TAU * (freq * 1.9) * t).sin() * 0.25;
         samples.push((tone * 0.9 + sparkle) * envelope * 0.42);
+    }
+
+    write_wav(&samples, SAMPLE_RATE)
+}
+
+fn generate_boom_sound() -> Vec<u8> {
+    const SAMPLE_RATE: u32 = 44_100;
+    let duration = 0.48;
+    let total = (SAMPLE_RATE as f32 * duration) as usize;
+    let mut samples = Vec::with_capacity(total);
+
+    for index in 0..total {
+        let t = index as f32 / SAMPLE_RATE as f32;
+        let progress = index as f32 / total as f32;
+        let envelope = adsr(progress, 0.002, 0.03, 0.70, 0.78);
+        let noise = (macroquad::rand::gen_range(-1000, 1000) as f32) / 1000.0;
+        let rumble = (std::f32::consts::TAU * (86.0 - progress * 20.0) * t).sin() * 0.65;
+        let crack = (std::f32::consts::TAU * 240.0 * t).sin() * (1.0 - progress) * 0.2;
+        samples.push((noise * 0.55 + rumble + crack) * envelope * 0.52);
     }
 
     write_wav(&samples, SAMPLE_RATE)
