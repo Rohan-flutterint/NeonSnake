@@ -8,6 +8,7 @@ NeonSnake is a desktop Snake game written in Rust with `macroquad`. The goal was
 - Bomb hazards that end the run on contact
 - Round-based obstacle patterns with shaped bomb layouts
 - Timed power-ups: Shield, Double, and Slow
+- Challenge mode with rotating objectives like survival runs and food rushes
 - Score-based level themes that shift colors, grid patterns, pace, and audio intensity
 - Particle effects for food pickups, bomb explosions, and the end-of-run screen
 - Smooth neon-inspired visual style

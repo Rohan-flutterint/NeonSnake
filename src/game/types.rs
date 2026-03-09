@@ -43,6 +43,62 @@ pub enum Phase {
     Playing,
     Paused,
     GameOver,
+    ChallengeClear,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum GameMode {
+    Arcade,
+    Challenge,
+}
+
+impl GameMode {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Arcade => "Arcade",
+            Self::Challenge => "Challenge",
+        }
+    }
+
+    pub fn toggled(self) -> Self {
+        match self {
+            Self::Arcade => Self::Challenge,
+            Self::Challenge => Self::Arcade,
+        }
+    }
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum ChallengeKind {
+    Survive60,
+    Collect20,
+    NoWallHits,
+}
+
+impl ChallengeKind {
+    pub fn for_round(round_number: u32) -> Self {
+        match round_number.saturating_sub(1) as usize % 3 {
+            0 => Self::Survive60,
+            1 => Self::Collect20,
+            _ => Self::NoWallHits,
+        }
+    }
+
+    pub fn title(self) -> &'static str {
+        match self {
+            Self::Survive60 => "Survive 60",
+            Self::Collect20 => "Collect 20",
+            Self::NoWallHits => "No Wall Hits",
+        }
+    }
+
+    pub fn detail(self) -> &'static str {
+        match self {
+            Self::Survive60 => "Stay alive for 60 seconds.",
+            Self::Collect20 => "Collect 20 food in one run.",
+            Self::NoWallHits => "Reach 120 score without a wall hit.",
+        }
+    }
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -232,6 +288,8 @@ pub struct Game {
     pub bombs: Vec<IVec2>,
     pub hazard_pattern: HazardPattern,
     pub hazard_layout: Vec<IVec2>,
+    pub mode: GameMode,
+    pub challenge: ChallengeKind,
     pub power_up: Option<SpawnedPowerUp>,
     pub particles: Vec<Particle>,
     pub phase: Phase,
@@ -239,6 +297,7 @@ pub struct Game {
     pub best_score: u32,
     pub rounds_played: u32,
     pub foods_eaten: u32,
+    pub survival_time: f32,
     pub shield_active: bool,
     pub multiplier_timer: f32,
     pub slow_timer: f32,

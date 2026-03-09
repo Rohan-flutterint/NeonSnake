@@ -503,7 +503,8 @@ fn draw_panel(layout: &Layout, game: &Game, theme: LevelTheme, palette: ThemePal
     );
 
     y += 136.0;
-    let stats: [(&str, String); 7] = [
+    let stats: [(&str, String); 8] = [
+        ("Mode", game.mode_label().to_owned()),
         ("Theme", theme.name().to_owned()),
         ("Pattern", game.hazard_pattern_name().to_owned()),
         ("Heading", game.direction.label().to_string()),
@@ -543,6 +544,70 @@ fn draw_panel(layout: &Layout, game: &Game, theme: LevelTheme, palette: ThemePal
             },
         );
         y += 34.0;
+    }
+
+    if game.is_challenge_mode() {
+        y += 8.0;
+        draw_text_ex(
+            "Challenge",
+            left,
+            y,
+            TextParams {
+                font_size: 22,
+                color: palette.accent_text,
+                ..Default::default()
+            },
+        );
+        y += 28.0;
+        draw_text_ex(
+            game.challenge_title(),
+            left,
+            y,
+            TextParams {
+                font_size: 20,
+                color: palette.title_text,
+                ..Default::default()
+            },
+        );
+        y += 24.0;
+        draw_text_ex(
+            game.challenge_detail(),
+            left,
+            y,
+            TextParams {
+                font_size: 17,
+                color: palette.body_text,
+                ..Default::default()
+            },
+        );
+        y += 26.0;
+        let progress_rect = Rect::new(left, y, layout.panel.w - 52.0, 12.0);
+        draw_rectangle(
+            progress_rect.x,
+            progress_rect.y,
+            progress_rect.w,
+            progress_rect.h,
+            Color::new(1.0, 1.0, 1.0, 0.06),
+        );
+        draw_rectangle(
+            progress_rect.x,
+            progress_rect.y,
+            progress_rect.w * game.challenge_progress_ratio(),
+            progress_rect.h,
+            palette.accent_text,
+        );
+        y += 24.0;
+        draw_text_ex(
+            &game.challenge_progress_text(),
+            left,
+            y,
+            TextParams {
+                font_size: 18,
+                color: palette.muted_text,
+                ..Default::default()
+            },
+        );
+        y += 20.0;
     }
 
     y += 8.0;
@@ -622,6 +687,7 @@ fn draw_panel(layout: &Layout, game: &Game, theme: LevelTheme, palette: ThemePal
         "Enter / Space      Start or resume",
         "Esc                Pause",
         "R                  Restart instantly",
+        "M                  Toggle mode in menus",
     ];
 
     for line in controls {
@@ -675,22 +741,34 @@ fn draw_particles(layout: &Layout, game: &Game) {
 
 fn draw_overlay(layout: &Layout, game: &Game, time: f32, palette: ThemePalette) {
     let (title, body) = match game.phase {
+        Phase::Title if game.is_challenge_mode() => (
+            "Challenge Mode",
+            "Press Enter to start the challenge.\nPress M to switch back to arcade mode.",
+        ),
         Phase::Title => (
             "Press Enter",
-            "Use WASD or arrow keys to start.\nCollect food, grab power-ups, dodge bombs, and avoid your own trail.",
+            "Use WASD or arrow keys to start.\nPress M to switch into challenge mode.",
         ),
         Phase::Paused => (
             "Paused",
             "Take a breath.\nPress Esc, Space, or Enter to resume.",
         ),
+        Phase::ChallengeClear => (
+            "Challenge Clear",
+            "Press R for a clean restart.\nPress Enter to queue the next challenge.",
+        ),
         Phase::GameOver => (
-            "Round Over",
+            if game.is_challenge_mode() {
+                "Challenge Failed"
+            } else {
+                "Round Over"
+            },
             "Press R for a clean restart.\nPress Enter to jump straight back in.",
         ),
         Phase::Playing => return,
     };
 
-    let overlay_alpha = if game.phase == Phase::GameOver {
+    let overlay_alpha = if matches!(game.phase, Phase::GameOver | Phase::ChallengeClear) {
         0.68
     } else {
         0.55
@@ -703,7 +781,7 @@ fn draw_overlay(layout: &Layout, game: &Game, time: f32, palette: ThemePalette) 
         Color::new(0.01, 0.03, 0.04, overlay_alpha),
     );
 
-    if game.phase == Phase::GameOver {
+    if matches!(game.phase, Phase::GameOver | Phase::ChallengeClear) {
         let card = Rect::new(
             layout.board.x + layout.board.w * 0.17,
             layout.board.y + layout.board.h * 0.19,
@@ -754,6 +832,20 @@ fn draw_overlay(layout: &Layout, game: &Game, time: f32, palette: ThemePalette) 
             palette.body_text,
             1.0,
         );
+        if game.is_challenge_mode() {
+            draw_text_centered(
+                &format!(
+                    "{}  •  {}",
+                    game.challenge_title(),
+                    game.challenge_progress_text()
+                ),
+                card.x + card.w * 0.5,
+                card.y + 160.0,
+                20,
+                palette.accent_text,
+                1.0,
+            );
+        }
         draw_text_centered(
             &format!(
                 "Theme {}   |   Pattern {}",
@@ -761,7 +853,7 @@ fn draw_overlay(layout: &Layout, game: &Game, time: f32, palette: ThemePalette) 
                 game.hazard_pattern_name()
             ),
             card.x + card.w * 0.5,
-            card.y + 164.0,
+            card.y + 190.0,
             19,
             palette.muted_text,
             1.0,
@@ -773,7 +865,7 @@ fn draw_overlay(layout: &Layout, game: &Game, time: f32, palette: ThemePalette) 
                 game.best_score
             ),
             card.x + card.w * 0.5,
-            card.y + 196.0,
+            card.y + 222.0,
             19,
             palette.muted_text,
             1.0,
@@ -781,13 +873,13 @@ fn draw_overlay(layout: &Layout, game: &Game, time: f32, palette: ThemePalette) 
         draw_text_centered(
             "Top 3 Runs",
             card.x + card.w * 0.5,
-            card.y + 242.0,
+            card.y + 268.0,
             24,
             palette.accent_text,
             1.0,
         );
 
-        let leaderboard_y = card.y + 280.0;
+        let leaderboard_y = card.y + 306.0;
         if game.high_scores.is_empty() {
             draw_text_centered(
                 "No saved runs yet",

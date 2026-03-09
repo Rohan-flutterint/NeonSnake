@@ -1,9 +1,9 @@
 use macroquad::prelude::*;
 
 use super::{
-    AudioCue, Direction, GRID_SIZE, Game, HazardPattern, HighScoreEntry, LevelTheme, Particle,
-    ParticleShape, Phase, PowerUpKind, START_LENGTH, SpawnedPowerUp, initial_bomb_count,
-    speed_for_score, target_bomb_count,
+    AudioCue, ChallengeKind, Direction, GRID_SIZE, Game, GameMode, HazardPattern, HighScoreEntry,
+    LevelTheme, Particle, ParticleShape, Phase, PowerUpKind, START_LENGTH, SpawnedPowerUp,
+    initial_bomb_count, speed_for_score, target_bomb_count,
 };
 use crate::storage::{load_high_scores, register_high_score, save_high_scores};
 
@@ -17,6 +17,8 @@ impl Game {
             bombs: Vec::new(),
             hazard_pattern: HazardPattern::SplitGates,
             hazard_layout: Vec::new(),
+            mode: GameMode::Arcade,
+            challenge: ChallengeKind::Survive60,
             power_up: None,
             particles: Vec::new(),
             phase: Phase::Title,
@@ -24,6 +26,7 @@ impl Game {
             best_score: 0,
             rounds_played: 0,
             foods_eaten: 0,
+            survival_time: 0.0,
             shield_active: false,
             multiplier_timer: 0.0,
             slow_timer: 0.0,
@@ -53,6 +56,7 @@ impl Game {
         self.queued_direction = None;
         self.score = 0;
         self.foods_eaten = 0;
+        self.survival_time = 0.0;
         self.shield_active = false;
         self.multiplier_timer = 0.0;
         self.slow_timer = 0.0;
@@ -64,6 +68,7 @@ impl Game {
         self.power_up = None;
         self.particles.clear();
         let round_number = self.rounds_played + 1;
+        self.challenge = ChallengeKind::for_round(round_number);
         self.hazard_pattern = HazardPattern::for_round(round_number);
         self.hazard_layout = build_hazard_layout(self.hazard_pattern, round_number);
         self.bombs = self.compose_bombs(initial_bomb_count(self.score));
@@ -79,11 +84,14 @@ impl Game {
     pub fn configure_showcase_playing(&mut self) {
         self.phase = Phase::Playing;
         self.rounds_played = self.rounds_played.max(3);
+        self.mode = GameMode::Challenge;
+        self.challenge = ChallengeKind::Collect20;
         self.direction = Direction::Right;
         self.queued_direction = None;
         self.score = 120;
         self.best_score = 240;
         self.foods_eaten = 12;
+        self.survival_time = 26.0;
         self.shield_active = true;
         self.multiplier_timer = 6.4;
         self.slow_timer = 0.0;
@@ -216,6 +224,40 @@ impl Game {
         self.hazard_pattern.name()
     }
 
+    pub fn mode_label(&self) -> &'static str {
+        self.mode.label()
+    }
+
+    pub fn is_challenge_mode(&self) -> bool {
+        self.mode == GameMode::Challenge
+    }
+
+    pub fn challenge_title(&self) -> &'static str {
+        self.challenge.title()
+    }
+
+    pub fn challenge_detail(&self) -> &'static str {
+        self.challenge.detail()
+    }
+
+    pub fn challenge_progress_text(&self) -> String {
+        match self.challenge {
+            ChallengeKind::Survive60 => {
+                format!("{:.0}s / 60s", self.survival_time.clamp(0.0, 60.0))
+            }
+            ChallengeKind::Collect20 => format!("{}/20 food", self.foods_eaten.min(20)),
+            ChallengeKind::NoWallHits => format!("{}/120 pts", self.score.min(120)),
+        }
+    }
+
+    pub fn challenge_progress_ratio(&self) -> f32 {
+        match self.challenge {
+            ChallengeKind::Survive60 => (self.survival_time / 60.0).clamp(0.0, 1.0),
+            ChallengeKind::Collect20 => (self.foods_eaten as f32 / 20.0).clamp(0.0, 1.0),
+            ChallengeKind::NoWallHits => (self.score as f32 / 120.0).clamp(0.0, 1.0),
+        }
+    }
+
     pub fn active_power_up_labels(&self) -> Vec<String> {
         let mut labels = Vec::new();
         if self.shield_active {
@@ -235,7 +277,7 @@ impl Game {
 
         if is_key_pressed(KeyCode::Enter) || is_key_pressed(KeyCode::Space) {
             match self.phase {
-                Phase::Title | Phase::GameOver => self.start_round(),
+                Phase::Title | Phase::GameOver | Phase::ChallengeClear => self.start_round(),
                 Phase::Paused => self.phase = Phase::Playing,
                 Phase::Playing => {}
             }
@@ -246,13 +288,18 @@ impl Game {
             match self.phase {
                 Phase::Playing => self.phase = Phase::Paused,
                 Phase::Paused => self.phase = Phase::Playing,
-                Phase::Title | Phase::GameOver => {}
+                Phase::Title | Phase::GameOver | Phase::ChallengeClear => {}
             }
             cues.push(AudioCue::Key);
         }
 
         if is_key_pressed(KeyCode::R) {
             self.start_round();
+            cues.push(AudioCue::Key);
+        }
+
+        if is_key_pressed(KeyCode::M) && self.phase != Phase::Playing {
+            self.mode = self.mode.toggled();
             cues.push(AudioCue::Key);
         }
 
@@ -263,7 +310,7 @@ impl Game {
                         cues.push(AudioCue::Key);
                     }
                 }
-                Phase::Title | Phase::GameOver => {
+                Phase::Title | Phase::GameOver | Phase::ChallengeClear => {
                     self.start_round();
                     if self.queue_direction(next_direction) {
                         cues.push(AudioCue::Key);
@@ -288,6 +335,8 @@ impl Game {
             return cues;
         }
 
+        self.survival_time += dt;
+
         self.multiplier_timer = (self.multiplier_timer - dt).max(0.0);
         self.slow_timer = (self.slow_timer - dt).max(0.0);
         if let Some(power_up) = self.power_up.as_mut() {
@@ -303,13 +352,20 @@ impl Game {
             self.step_timer -= effective_delay;
             if let Some(cue) = self.advance() {
                 cues.push(cue);
-                if matches!(cue, AudioCue::GameOver) {
+                if matches!(cue, AudioCue::GameOver | AudioCue::Boom) {
                     break;
                 }
             }
             if self.phase != Phase::Playing {
                 break;
             }
+        }
+
+        if self.phase == Phase::Playing
+            && self.mode == GameMode::Challenge
+            && self.update_challenge_completion()
+        {
+            cues.push(AudioCue::PowerUp);
         }
 
         cues
@@ -545,6 +601,22 @@ impl Game {
             particle.ttl -= dt;
         }
         self.particles.retain(|particle| particle.ttl > 0.0);
+    }
+
+    fn update_challenge_completion(&mut self) -> bool {
+        let completed = match self.challenge {
+            ChallengeKind::Survive60 => self.survival_time >= 60.0,
+            ChallengeKind::Collect20 => self.foods_eaten >= 20,
+            ChallengeKind::NoWallHits => self.score >= 120,
+        };
+
+        if completed {
+            self.phase = Phase::ChallengeClear;
+            self.record_score();
+            self.spawn_food_particles(self.snake[0]);
+        }
+
+        completed
     }
 
     fn spawn_food_particles(&mut self, cell: IVec2) {
