@@ -1,0 +1,8 @@
+[package]
+name = "neonsnake"
+version = "0.1.0"
+edition = "2024"
+description = "A neon-styled desktop Snake game built with Rust and macroquad"
+
+[dependencies]
+macroquad = { version = "0.4.14", features = ["audio"] }
