@@ -2,7 +2,10 @@ use macroquad::{
     audio::{PlaySoundParams, Sound, load_sound_from_bytes, play_sound},
     prelude::*,
 };
-use std::path::Path;
+use std::{
+    env, fs,
+    path::{Path, PathBuf},
+};
 
 const GRID_SIZE: i32 = 24;
 const START_LENGTH: i32 = 5;
@@ -81,6 +84,12 @@ struct Layout {
     panel: Rect,
 }
 
+#[derive(Clone)]
+struct HighScoreEntry {
+    score: u32,
+    length: usize,
+}
+
 struct Game {
     snake: Vec<IVec2>,
     direction: Direction,
@@ -91,6 +100,8 @@ struct Game {
     score: u32,
     best_score: u32,
     rounds_played: u32,
+    high_scores: Vec<HighScoreEntry>,
+    score_recorded: bool,
     step_timer: f32,
     step_delay: f32,
     food_flash: f32,
@@ -117,11 +128,18 @@ impl Game {
             score: 0,
             best_score: 0,
             rounds_played: 0,
+            high_scores: load_high_scores(),
+            score_recorded: false,
             step_timer: 0.0,
             step_delay: BASE_STEP_DELAY,
             food_flash: 0.0,
             death_flash: 0.0,
         };
+        game.best_score = game
+            .high_scores
+            .first()
+            .map(|entry| entry.score)
+            .unwrap_or(0);
         game.reset_round();
         game.phase = Phase::Title;
         game
@@ -135,12 +153,13 @@ impl Game {
         self.direction = Direction::Right;
         self.queued_direction = None;
         self.score = 0;
+        self.score_recorded = false;
         self.step_timer = 0.0;
         self.step_delay = BASE_STEP_DELAY;
         self.food_flash = 0.0;
         self.death_flash = 0.0;
-        self.food = self.spawn_food();
         self.bombs = self.spawn_bombs(initial_bomb_count(self.score));
+        self.food = self.spawn_food();
     }
 
     fn start_round(&mut self) {
@@ -239,6 +258,27 @@ impl Game {
         } else if self.bombs.len() > target {
             self.bombs.truncate(target);
         }
+    }
+
+    fn record_score(&mut self) {
+        if self.score_recorded || self.score == 0 {
+            return;
+        }
+
+        register_high_score(
+            &mut self.high_scores,
+            HighScoreEntry {
+                score: self.score,
+                length: self.snake.len(),
+            },
+        );
+        self.best_score = self
+            .high_scores
+            .first()
+            .map(|entry| entry.score)
+            .unwrap_or(0);
+        let _ = save_high_scores(&self.high_scores);
+        self.score_recorded = true;
     }
 
     fn status_label(&self) -> &'static str {
@@ -360,14 +400,14 @@ impl Game {
             || next_head.y >= GRID_SIZE;
 
         if out_of_bounds || collides_with_self {
-            self.best_score = self.best_score.max(self.score);
+            self.record_score();
             self.phase = Phase::GameOver;
             self.death_flash = 0.6;
             return Some(AudioCue::GameOver);
         }
 
         if hit_bomb {
-            self.best_score = self.best_score.max(self.score);
+            self.record_score();
             self.phase = Phase::GameOver;
             self.death_flash = 0.8;
             return Some(AudioCue::Boom);
@@ -475,6 +515,47 @@ fn initial_bomb_count(score: u32) -> usize {
 
 fn target_bomb_count(score: u32) -> usize {
     (1 + (score / 40) as usize).min(5)
+}
+
+fn score_file_path() -> PathBuf {
+    env::var_os("HOME")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from("."))
+        .join(".neonsnake_scores")
+}
+
+fn load_high_scores() -> Vec<HighScoreEntry> {
+    let Ok(contents) = fs::read_to_string(score_file_path()) else {
+        return Vec::new();
+    };
+
+    let mut entries = contents
+        .lines()
+        .filter_map(|line| {
+            let mut parts = line.split(',');
+            let score = parts.next()?.trim().parse().ok()?;
+            let length = parts.next()?.trim().parse().ok()?;
+            Some(HighScoreEntry { score, length })
+        })
+        .collect::<Vec<_>>();
+    entries.sort_by(|a, b| b.score.cmp(&a.score).then_with(|| b.length.cmp(&a.length)));
+    entries.truncate(5);
+    entries
+}
+
+fn save_high_scores(entries: &[HighScoreEntry]) -> std::io::Result<()> {
+    let body = entries
+        .iter()
+        .map(|entry| format!("{},{}", entry.score, entry.length))
+        .collect::<Vec<_>>()
+        .join("\n");
+    fs::write(score_file_path(), format!("{body}\n"))
+}
+
+fn register_high_score(entries: &mut Vec<HighScoreEntry>, new_entry: HighScoreEntry) {
+    entries.push(new_entry);
+    entries.sort_by(|a, b| b.score.cmp(&a.score).then_with(|| b.length.cmp(&a.length)));
+    entries.truncate(5);
 }
 
 fn read_direction_input() -> Option<Direction> {
@@ -957,6 +1038,56 @@ fn draw_panel(layout: &Layout, game: &Game) {
             },
         );
         y += 28.0;
+    }
+
+    y += 10.0;
+    draw_text_ex(
+        "Top Runs",
+        left,
+        y,
+        TextParams {
+            font_size: 22,
+            color: Color::new(0.36, 0.94, 0.84, 1.0),
+            ..Default::default()
+        },
+    );
+    y += 30.0;
+
+    if game.high_scores.is_empty() {
+        draw_text_ex(
+            "No saved runs yet.",
+            left,
+            y,
+            TextParams {
+                font_size: 18,
+                color: Color::new(0.62, 0.78, 0.80, 1.0),
+                ..Default::default()
+            },
+        );
+    } else {
+        for (index, entry) in game.high_scores.iter().enumerate() {
+            draw_text_ex(
+                &format!("{}. {:04}", index + 1, entry.score),
+                left,
+                y,
+                TextParams {
+                    font_size: 19,
+                    color: Color::new(0.92, 0.98, 0.98, 1.0),
+                    ..Default::default()
+                },
+            );
+            draw_text_ex(
+                &format!("len {}", entry.length),
+                layout.panel.x + layout.panel.w - 112.0,
+                y,
+                TextParams {
+                    font_size: 18,
+                    color: Color::new(0.62, 0.78, 0.80, 1.0),
+                    ..Default::default()
+                },
+            );
+            y += 24.0;
+        }
     }
 
     let footer = match game.phase {
