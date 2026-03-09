@@ -2,7 +2,8 @@ mod state;
 mod types;
 
 pub use types::{
-    AudioCue, Direction, Game, HighScoreEntry, LevelTheme, Phase, PowerUpKind, SpawnedPowerUp,
+    AudioCue, Direction, Game, HazardPattern, HighScoreEntry, LevelTheme, Particle, ParticleShape,
+    Phase, PowerUpKind, SpawnedPowerUp,
 };
 
 pub const GRID_SIZE: i32 = 24;

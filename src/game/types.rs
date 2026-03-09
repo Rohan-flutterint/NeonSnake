@@ -1,4 +1,4 @@
-use macroquad::prelude::{Color, IVec2};
+use macroquad::prelude::{Color, IVec2, Vec2};
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum Direction {
@@ -118,6 +118,37 @@ impl LevelTheme {
     }
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum HazardPattern {
+    SplitGates,
+    DiamondRun,
+    ReactorLadder,
+    CornerHooks,
+    Pinwheel,
+}
+
+impl HazardPattern {
+    pub fn for_round(round_number: u32) -> Self {
+        match round_number.saturating_sub(1) as usize % 5 {
+            0 => Self::SplitGates,
+            1 => Self::DiamondRun,
+            2 => Self::ReactorLadder,
+            3 => Self::CornerHooks,
+            _ => Self::Pinwheel,
+        }
+    }
+
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::SplitGates => "Split Gates",
+            Self::DiamondRun => "Diamond Run",
+            Self::ReactorLadder => "Reactor Ladder",
+            Self::CornerHooks => "Corner Hooks",
+            Self::Pinwheel => "Pinwheel",
+        }
+    }
+}
+
 #[derive(Clone, Copy)]
 pub enum AudioCue {
     Key,
@@ -167,6 +198,26 @@ pub struct SpawnedPowerUp {
     pub ttl: f32,
 }
 
+#[derive(Clone, Copy)]
+pub enum ParticleShape {
+    Dot,
+    Shard,
+    Ring,
+}
+
+#[derive(Clone, Copy)]
+pub struct Particle {
+    pub position: Vec2,
+    pub velocity: Vec2,
+    pub ttl: f32,
+    pub max_ttl: f32,
+    pub size: f32,
+    pub color: Color,
+    pub rotation: f32,
+    pub angular_velocity: f32,
+    pub shape: ParticleShape,
+}
+
 #[derive(Clone)]
 pub struct HighScoreEntry {
     pub score: u32,
@@ -179,7 +230,10 @@ pub struct Game {
     pub queued_direction: Option<Direction>,
     pub food: IVec2,
     pub bombs: Vec<IVec2>,
+    pub hazard_pattern: HazardPattern,
+    pub hazard_layout: Vec<IVec2>,
     pub power_up: Option<SpawnedPowerUp>,
+    pub particles: Vec<Particle>,
     pub phase: Phase,
     pub score: u32,
     pub best_score: u32,

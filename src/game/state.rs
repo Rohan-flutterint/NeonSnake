@@ -1,8 +1,9 @@
 use macroquad::prelude::*;
 
 use super::{
-    AudioCue, Direction, GRID_SIZE, Game, HighScoreEntry, LevelTheme, Phase, PowerUpKind,
-    START_LENGTH, SpawnedPowerUp, initial_bomb_count, speed_for_score, target_bomb_count,
+    AudioCue, Direction, GRID_SIZE, Game, HazardPattern, HighScoreEntry, LevelTheme, Particle,
+    ParticleShape, Phase, PowerUpKind, START_LENGTH, SpawnedPowerUp, initial_bomb_count,
+    speed_for_score, target_bomb_count,
 };
 use crate::storage::{load_high_scores, register_high_score, save_high_scores};
 
@@ -14,7 +15,10 @@ impl Game {
             queued_direction: None,
             food: ivec2(0, 0),
             bombs: Vec::new(),
+            hazard_pattern: HazardPattern::SplitGates,
+            hazard_layout: Vec::new(),
             power_up: None,
+            particles: Vec::new(),
             phase: Phase::Title,
             score: 0,
             best_score: 0,
@@ -58,7 +62,11 @@ impl Game {
         self.food_flash = 0.0;
         self.death_flash = 0.0;
         self.power_up = None;
-        self.bombs = self.spawn_bombs(initial_bomb_count(self.score));
+        self.particles.clear();
+        let round_number = self.rounds_played + 1;
+        self.hazard_pattern = HazardPattern::for_round(round_number);
+        self.hazard_layout = build_hazard_layout(self.hazard_pattern, round_number);
+        self.bombs = self.compose_bombs(initial_bomb_count(self.score));
         self.food = self.spawn_food();
     }
 
@@ -99,11 +107,37 @@ impl Game {
         ];
         self.food = ivec2(18, 8);
         self.bombs = vec![ivec2(7, 7), ivec2(18, 16), ivec2(8, 17)];
+        self.hazard_pattern = HazardPattern::DiamondRun;
+        self.hazard_layout = self.bombs.clone();
         self.power_up = Some(SpawnedPowerUp {
             kind: PowerUpKind::Slow,
             position: ivec2(5, 13),
             ttl: 7.0,
         });
+        self.particles = vec![
+            Particle {
+                position: vec2(18.5, 8.5),
+                velocity: vec2(0.42, -0.32),
+                ttl: 0.7,
+                max_ttl: 0.7,
+                size: 0.28,
+                color: Color::new(1.0, 0.78, 0.22, 0.9),
+                rotation: 0.0,
+                angular_velocity: 1.2,
+                shape: ParticleShape::Ring,
+            },
+            Particle {
+                position: vec2(18.5, 8.5),
+                velocity: vec2(-0.7, -0.18),
+                ttl: 0.6,
+                max_ttl: 0.6,
+                size: 0.18,
+                color: Color::new(1.0, 0.52, 0.24, 1.0),
+                rotation: 0.6,
+                angular_velocity: 7.0,
+                shape: ParticleShape::Shard,
+            },
+        ];
     }
 
     pub fn configure_showcase_game_over(&mut self) {
@@ -132,7 +166,33 @@ impl Game {
         ];
         self.food = ivec2(15, 14);
         self.bombs = vec![ivec2(12, 10), ivec2(16, 7), ivec2(5, 15)];
+        self.hazard_pattern = HazardPattern::CornerHooks;
+        self.hazard_layout = self.bombs.clone();
         self.power_up = None;
+        self.particles = vec![
+            Particle {
+                position: vec2(9.5, 3.5),
+                velocity: vec2(0.0, 0.0),
+                ttl: 0.9,
+                max_ttl: 0.9,
+                size: 0.62,
+                color: Color::new(1.0, 0.18, 0.22, 0.78),
+                rotation: 0.0,
+                angular_velocity: 0.0,
+                shape: ParticleShape::Ring,
+            },
+            Particle {
+                position: vec2(9.5, 3.5),
+                velocity: vec2(0.9, 0.55),
+                ttl: 0.7,
+                max_ttl: 0.7,
+                size: 0.16,
+                color: Color::new(1.0, 0.42, 0.22, 0.95),
+                rotation: 0.3,
+                angular_velocity: 8.0,
+                shape: ParticleShape::Shard,
+            },
+        ];
     }
 
     pub fn effective_step_delay(&self) -> f32 {
@@ -152,6 +212,10 @@ impl Game {
         self.level_theme().next_threshold()
     }
 
+    pub fn hazard_pattern_name(&self) -> &'static str {
+        self.hazard_pattern.name()
+    }
+
     pub fn active_power_up_labels(&self) -> Vec<String> {
         let mut labels = Vec::new();
         if self.shield_active {
@@ -164,15 +228,6 @@ impl Game {
             labels.push(format!("Slow {:.1}s", self.slow_timer));
         }
         labels
-    }
-
-    pub fn status_label(&self) -> &'static str {
-        match self.phase {
-            Phase::Title => "Ready",
-            Phase::Playing => "Live",
-            Phase::Paused => "Paused",
-            Phase::GameOver => "Crashed",
-        }
     }
 
     pub fn handle_input(&mut self) -> Vec<AudioCue> {
@@ -227,6 +282,7 @@ impl Game {
         let mut cues = Vec::new();
         self.food_flash = (self.food_flash - dt).max(0.0);
         self.death_flash = (self.death_flash - dt).max(0.0);
+        self.update_particles(dt);
 
         if self.phase != Phase::Playing {
             return cues;
@@ -277,25 +333,51 @@ impl Game {
         }
     }
 
-    fn spawn_bombs(&self, count: usize) -> Vec<IVec2> {
+    fn compose_bombs(&self, count: usize) -> Vec<IVec2> {
         let mut bombs = Vec::with_capacity(count);
+
+        for slot in &self.hazard_layout {
+            if bombs.len() == count {
+                break;
+            }
+            if self.is_valid_bomb_cell(*slot, &bombs) {
+                bombs.push(*slot);
+            }
+        }
+
         while bombs.len() < count {
+            if let Some(candidate) = self.spawn_random_bomb(&bombs) {
+                bombs.push(candidate);
+            } else {
+                break;
+            }
+        }
+
+        bombs
+    }
+
+    fn spawn_random_bomb(&self, existing: &[IVec2]) -> Option<IVec2> {
+        for _ in 0..256 {
             let candidate = ivec2(
                 macroquad::rand::gen_range(0, GRID_SIZE),
                 macroquad::rand::gen_range(0, GRID_SIZE),
             );
-            if !self.snake.contains(&candidate)
-                && candidate != self.food
-                && !bombs.contains(&candidate)
-                && self
-                    .power_up
-                    .map(|item| item.position != candidate)
-                    .unwrap_or(true)
-            {
-                bombs.push(candidate);
+            if self.is_valid_bomb_cell(candidate, existing) {
+                return Some(candidate);
             }
         }
-        bombs
+
+        None
+    }
+
+    fn is_valid_bomb_cell(&self, candidate: IVec2, existing: &[IVec2]) -> bool {
+        !self.snake.contains(&candidate)
+            && candidate != self.food
+            && !existing.contains(&candidate)
+            && self
+                .power_up
+                .map(|item| item.position != candidate)
+                .unwrap_or(true)
     }
 
     fn spawn_power_up(&self) -> Option<SpawnedPowerUp> {
@@ -329,12 +411,7 @@ impl Game {
 
     fn sync_bombs(&mut self) {
         let target = target_bomb_count(self.score);
-        if self.bombs.len() < target {
-            let mut additions = self.spawn_bombs(target - self.bombs.len());
-            self.bombs.append(&mut additions);
-        } else if self.bombs.len() > target {
-            self.bombs.truncate(target);
-        }
+        self.bombs = self.compose_bombs(target);
     }
 
     fn maybe_spawn_power_up(&mut self) {
@@ -413,6 +490,7 @@ impl Game {
             || next_head.y >= GRID_SIZE;
 
         if out_of_bounds || collides_with_self {
+            self.spawn_crash_particles(next_head, false);
             self.record_score();
             self.phase = Phase::GameOver;
             self.death_flash = 0.6;
@@ -420,6 +498,7 @@ impl Game {
         }
 
         if hit_bomb {
+            self.spawn_crash_particles(next_head, true);
             if self.shield_active {
                 self.shield_active = false;
                 self.bombs.retain(|&bomb| bomb != next_head);
@@ -434,6 +513,7 @@ impl Game {
         self.snake.insert(0, next_head);
 
         if will_grow {
+            self.spawn_food_particles(next_head);
             let gained = if self.multiplier_timer > 0.0 { 20 } else { 10 };
             self.foods_eaten += 1;
             self.score += gained;
@@ -456,6 +536,112 @@ impl Game {
 
         None
     }
+
+    fn update_particles(&mut self, dt: f32) {
+        for particle in &mut self.particles {
+            particle.position += particle.velocity * dt;
+            particle.velocity *= 1.0 - (dt * 1.6).min(0.45);
+            particle.rotation += particle.angular_velocity * dt;
+            particle.ttl -= dt;
+        }
+        self.particles.retain(|particle| particle.ttl > 0.0);
+    }
+
+    fn spawn_food_particles(&mut self, cell: IVec2) {
+        let origin = grid_center(cell);
+        self.particles.push(Particle {
+            position: origin,
+            velocity: vec2(0.0, 0.0),
+            ttl: 0.55,
+            max_ttl: 0.55,
+            size: 0.32,
+            color: Color::new(1.0, 0.78, 0.26, 0.88),
+            rotation: 0.0,
+            angular_velocity: 0.0,
+            shape: ParticleShape::Ring,
+        });
+
+        for _ in 0..10 {
+            let angle = macroquad::rand::gen_range(0.0, std::f32::consts::TAU);
+            let speed = macroquad::rand::gen_range(1.6, 4.4);
+            let color = if macroquad::rand::gen_range(0, 2) == 0 {
+                Color::new(1.0, 0.50, 0.24, 0.98)
+            } else {
+                Color::new(1.0, 0.90, 0.38, 0.95)
+            };
+            self.particles.push(Particle {
+                position: origin,
+                velocity: vec2(angle.cos(), angle.sin()) * speed,
+                ttl: macroquad::rand::gen_range(0.28, 0.52),
+                max_ttl: 0.52,
+                size: macroquad::rand::gen_range(0.10, 0.18),
+                color,
+                rotation: angle,
+                angular_velocity: macroquad::rand::gen_range(-8.0, 8.0),
+                shape: if macroquad::rand::gen_range(0, 3) == 0 {
+                    ParticleShape::Shard
+                } else {
+                    ParticleShape::Dot
+                },
+            });
+        }
+    }
+
+    fn spawn_crash_particles(&mut self, cell: IVec2, bomb_hit: bool) {
+        let origin = clamped_grid_center(cell);
+        let (ring_color, shard_a, shard_b, count) = if bomb_hit {
+            (
+                Color::new(1.0, 0.24, 0.18, 0.90),
+                Color::new(1.0, 0.76, 0.28, 0.96),
+                Color::new(1.0, 0.30, 0.16, 0.96),
+                18,
+            )
+        } else {
+            (
+                Color::new(1.0, 0.16, 0.24, 0.76),
+                Color::new(1.0, 0.54, 0.26, 0.92),
+                Color::new(1.0, 0.20, 0.36, 0.92),
+                12,
+            )
+        };
+
+        self.particles.push(Particle {
+            position: origin,
+            velocity: vec2(0.0, 0.0),
+            ttl: 0.82,
+            max_ttl: 0.82,
+            size: if bomb_hit { 0.72 } else { 0.58 },
+            color: ring_color,
+            rotation: 0.0,
+            angular_velocity: 0.0,
+            shape: ParticleShape::Ring,
+        });
+
+        for _ in 0..count {
+            let angle = macroquad::rand::gen_range(0.0, std::f32::consts::TAU);
+            let speed = if bomb_hit {
+                macroquad::rand::gen_range(2.4, 6.6)
+            } else {
+                macroquad::rand::gen_range(1.6, 4.8)
+            };
+            let color = if macroquad::rand::gen_range(0, 2) == 0 {
+                shard_a
+            } else {
+                shard_b
+            };
+            self.particles.push(Particle {
+                position: origin,
+                velocity: vec2(angle.cos(), angle.sin()) * speed,
+                ttl: macroquad::rand::gen_range(0.38, 0.88),
+                max_ttl: 0.88,
+                size: macroquad::rand::gen_range(0.12, 0.22),
+                color,
+                rotation: angle,
+                angular_velocity: macroquad::rand::gen_range(-12.0, 12.0),
+                shape: ParticleShape::Shard,
+            });
+        }
+    }
 }
 
 fn read_direction_input() -> Option<Direction> {
@@ -470,4 +656,78 @@ fn read_direction_input() -> Option<Direction> {
     } else {
         None
     }
+}
+
+fn build_hazard_layout(pattern: HazardPattern, round_number: u32) -> Vec<IVec2> {
+    let center = ivec2(GRID_SIZE / 2, GRID_SIZE / 2);
+    let rotation = (round_number.saturating_sub(1) % 4) as i32;
+    let offsets = match pattern {
+        HazardPattern::SplitGates => vec![
+            ivec2(-7, -2),
+            ivec2(-7, -1),
+            ivec2(-7, 0),
+            ivec2(7, -2),
+            ivec2(7, -1),
+            ivec2(7, 0),
+        ],
+        HazardPattern::DiamondRun => vec![
+            ivec2(0, -7),
+            ivec2(-1, -6),
+            ivec2(1, -6),
+            ivec2(-2, -5),
+            ivec2(2, -5),
+            ivec2(0, -4),
+        ],
+        HazardPattern::ReactorLadder => vec![
+            ivec2(-5, -8),
+            ivec2(-5, -6),
+            ivec2(-5, -4),
+            ivec2(-3, -8),
+            ivec2(-3, -6),
+            ivec2(-3, -4),
+        ],
+        HazardPattern::CornerHooks => vec![
+            ivec2(-10, -8),
+            ivec2(-9, -8),
+            ivec2(-9, -7),
+            ivec2(10, 8),
+            ivec2(9, 8),
+            ivec2(9, 7),
+        ],
+        HazardPattern::Pinwheel => vec![
+            ivec2(-8, 1),
+            ivec2(-7, 1),
+            ivec2(-7, 2),
+            ivec2(1, -8),
+            ivec2(1, -7),
+            ivec2(2, -7),
+        ],
+    };
+
+    offsets
+        .into_iter()
+        .map(|offset| rotate_offset(offset, rotation) + center)
+        .filter(|cell| cell.x >= 0 && cell.y >= 0 && cell.x < GRID_SIZE && cell.y < GRID_SIZE)
+        .collect()
+}
+
+fn rotate_offset(offset: IVec2, turns: i32) -> IVec2 {
+    match turns.rem_euclid(4) {
+        0 => offset,
+        1 => ivec2(-offset.y, offset.x),
+        2 => ivec2(-offset.x, -offset.y),
+        _ => ivec2(offset.y, -offset.x),
+    }
+}
+
+fn grid_center(cell: IVec2) -> Vec2 {
+    vec2(cell.x as f32 + 0.5, cell.y as f32 + 0.5)
+}
+
+fn clamped_grid_center(cell: IVec2) -> Vec2 {
+    let max_edge = GRID_SIZE as f32 - 0.35;
+    vec2(
+        (cell.x as f32 + 0.5).clamp(0.35, max_edge),
+        (cell.y as f32 + 0.5).clamp(0.35, max_edge),
+    )
 }

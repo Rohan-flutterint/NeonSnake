@@ -1,6 +1,8 @@
 use macroquad::prelude::*;
 
-use crate::game::{BASE_STEP_DELAY, BOARD_PADDING, Direction, GRID_SIZE, Game, LevelTheme, Phase};
+use crate::game::{
+    BASE_STEP_DELAY, BOARD_PADDING, Direction, GRID_SIZE, Game, LevelTheme, ParticleShape, Phase,
+};
 
 struct Layout {
     board: Rect,
@@ -58,6 +60,7 @@ pub fn draw_scene(game: &Game) {
     draw_bombs(&layout, game, time, palette);
     draw_power_up(&layout, game, time, palette);
     draw_snake(&layout, game, time, palette);
+    draw_particles(&layout, game);
     draw_panel(&layout, game, theme, palette);
     draw_overlay(&layout, game, time, palette);
 
@@ -502,7 +505,7 @@ fn draw_panel(layout: &Layout, game: &Game, theme: LevelTheme, palette: ThemePal
     y += 136.0;
     let stats: [(&str, String); 7] = [
         ("Theme", theme.name().to_owned()),
-        ("Status", game.status_label().to_string()),
+        ("Pattern", game.hazard_pattern_name().to_owned()),
         ("Heading", game.direction.label().to_string()),
         ("Bombs", game.bombs.len().to_string()),
         (
@@ -634,83 +637,40 @@ fn draw_panel(layout: &Layout, game: &Game, theme: LevelTheme, palette: ThemePal
         );
         y += 28.0;
     }
+}
 
-    y += 10.0;
-    draw_text_ex(
-        "Top Runs",
-        left,
-        y,
-        TextParams {
-            font_size: 22,
-            color: palette.accent_text,
-            ..Default::default()
-        },
-    );
-    y += 30.0;
+fn draw_particles(layout: &Layout, game: &Game) {
+    let cell = layout.grid.w / GRID_SIZE as f32;
 
-    if game.high_scores.is_empty() {
-        draw_text_ex(
-            "No saved runs yet.",
-            left,
-            y,
-            TextParams {
-                font_size: 18,
-                color: palette.muted_text,
-                ..Default::default()
-            },
+    for particle in &game.particles {
+        let progress = (particle.ttl / particle.max_ttl.max(f32::EPSILON)).clamp(0.0, 1.0);
+        let alpha = particle.color.a * progress;
+        let color = Color::new(particle.color.r, particle.color.g, particle.color.b, alpha);
+        let center = vec2(
+            layout.grid.x + particle.position.x * cell,
+            layout.grid.y + particle.position.y * cell,
         );
-    } else {
-        for (index, entry) in game.high_scores.iter().enumerate() {
-            draw_text_ex(
-                &format!("{}. {:04}", index + 1, entry.score),
-                left,
-                y,
-                TextParams {
-                    font_size: 19,
-                    color: palette.title_text,
-                    ..Default::default()
-                },
-            );
-            draw_text_ex(
-                &format!("len {}", entry.length),
-                layout.panel.x + layout.panel.w - 112.0,
-                y,
-                TextParams {
-                    font_size: 18,
-                    color: palette.muted_text,
-                    ..Default::default()
-                },
-            );
-            y += 24.0;
+        let size = particle.size * cell * (0.55 + (1.0 - progress) * 0.8);
+
+        match particle.shape {
+            ParticleShape::Dot => draw_circle(center.x, center.y, size * 0.45, color),
+            ParticleShape::Shard => draw_poly(
+                center.x,
+                center.y,
+                4,
+                size,
+                particle.rotation * 57.29578,
+                color,
+            ),
+            ParticleShape::Ring => draw_circle_lines(
+                center.x,
+                center.y,
+                size,
+                (cell * 0.08).max(1.6) * progress.max(0.25),
+                color,
+            ),
         }
     }
-
-    let footer = match game.phase {
-        Phase::Title => "Start moving to launch immediately.",
-        Phase::Playing if game.power_up.is_some() => {
-            "Grab the power-up before it expires and manage the bombs."
-        }
-        Phase::Playing => match theme {
-            LevelTheme::Afterglow => "Afterglow is stable. Build score and set the pace.",
-            LevelTheme::Voltage => "Voltage is rising. The board is getting sharper and faster.",
-            LevelTheme::Overdrive => "Overdrive is active. Stay decisive and keep lanes open.",
-            LevelTheme::Singularity => "Singularity is fully live. Everything is running hot.",
-        },
-        Phase::Paused => "Paused. Resume with Enter, Space, or Esc.",
-        Phase::GameOver => "Crash or bomb hit. Restart with R or Enter.",
-    };
-
-    let footer_y = layout.panel.y + layout.panel.h - 42.0;
-    draw_text_ex(
-        footer,
-        left,
-        footer_y,
-        TextParams {
-            font_size: 18,
-            color: palette.muted_text,
-            ..Default::default()
-        },
-    );
 }
 
 fn draw_overlay(layout: &Layout, game: &Game, time: f32, palette: ThemePalette) {
@@ -730,13 +690,139 @@ fn draw_overlay(layout: &Layout, game: &Game, time: f32, palette: ThemePalette) 
         Phase::Playing => return,
     };
 
+    let overlay_alpha = if game.phase == Phase::GameOver {
+        0.68
+    } else {
+        0.55
+    };
     draw_rectangle(
         layout.board.x,
         layout.board.y,
         layout.board.w,
         layout.board.h,
-        Color::new(0.01, 0.03, 0.04, 0.55),
+        Color::new(0.01, 0.03, 0.04, overlay_alpha),
     );
+
+    if game.phase == Phase::GameOver {
+        let card = Rect::new(
+            layout.board.x + layout.board.w * 0.17,
+            layout.board.y + layout.board.h * 0.19,
+            layout.board.w * 0.66,
+            layout.board.h * 0.54,
+        );
+        draw_rectangle(
+            card.x + 10.0,
+            card.y + 14.0,
+            card.w,
+            card.h,
+            Color::new(0.0, 0.0, 0.0, 0.24),
+        );
+        draw_rectangle(
+            card.x,
+            card.y,
+            card.w,
+            card.h,
+            Color::new(0.08, 0.05, 0.09, 0.92),
+        );
+        draw_rectangle_lines(card.x, card.y, card.w, card.h, 2.0, palette.accent_text);
+        draw_rectangle(
+            card.x + 28.0,
+            card.y + 98.0,
+            card.w - 56.0,
+            1.5,
+            Color::new(
+                palette.accent_text.r,
+                palette.accent_text.g,
+                palette.accent_text.b,
+                0.42,
+            ),
+        );
+
+        draw_text_centered(
+            title,
+            card.x + card.w * 0.5,
+            card.y + 56.0,
+            46,
+            palette.title_text,
+            1.0,
+        );
+        draw_text_centered(
+            &format!("Current score {:03}", game.score),
+            card.x + card.w * 0.5,
+            card.y + 128.0,
+            28,
+            palette.body_text,
+            1.0,
+        );
+        draw_text_centered(
+            &format!(
+                "Theme {}   |   Pattern {}",
+                game.level_theme().name(),
+                game.hazard_pattern_name()
+            ),
+            card.x + card.w * 0.5,
+            card.y + 164.0,
+            19,
+            palette.muted_text,
+            1.0,
+        );
+        draw_text_centered(
+            &format!(
+                "Snake length {}   |   Best {:03}",
+                game.snake.len(),
+                game.best_score
+            ),
+            card.x + card.w * 0.5,
+            card.y + 196.0,
+            19,
+            palette.muted_text,
+            1.0,
+        );
+        draw_text_centered(
+            "Top 3 Runs",
+            card.x + card.w * 0.5,
+            card.y + 242.0,
+            24,
+            palette.accent_text,
+            1.0,
+        );
+
+        let leaderboard_y = card.y + 280.0;
+        if game.high_scores.is_empty() {
+            draw_text_centered(
+                "No saved runs yet",
+                card.x + card.w * 0.5,
+                leaderboard_y,
+                18,
+                palette.muted_text,
+                1.0,
+            );
+        } else {
+            for (index, entry) in game.high_scores.iter().take(3).enumerate() {
+                draw_text_centered(
+                    &format!("{}. {:04}   len {}", index + 1, entry.score, entry.length),
+                    card.x + card.w * 0.5,
+                    leaderboard_y + index as f32 * 28.0,
+                    19,
+                    if index == 0 {
+                        palette.title_text
+                    } else {
+                        palette.body_text
+                    },
+                    1.0,
+                );
+            }
+        }
+        draw_text_centered(
+            "R to restart immediately  •  Enter to jump back in",
+            card.x + card.w * 0.5,
+            card.y + card.h - 34.0,
+            20,
+            palette.accent_text,
+            1.0,
+        );
+        return;
+    }
 
     let pulse = 1.0 + ((time * 2.4).sin() + 1.0) * 0.02;
     let center_x = layout.board.x + layout.board.w * 0.5;
