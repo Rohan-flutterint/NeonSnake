@@ -74,6 +74,7 @@ enum Phase {
 enum AudioCue {
     Key,
     Eat,
+    PowerUp,
     Boom,
     GameOver,
 }
@@ -82,6 +83,46 @@ struct Layout {
     board: Rect,
     grid: Rect,
     panel: Rect,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum PowerUpKind {
+    Shield,
+    Double,
+    Slow,
+}
+
+impl PowerUpKind {
+    fn label(self) -> &'static str {
+        match self {
+            Self::Shield => "Shield",
+            Self::Double => "Double",
+            Self::Slow => "Slow",
+        }
+    }
+
+    fn short_label(self) -> &'static str {
+        match self {
+            Self::Shield => "S",
+            Self::Double => "x2",
+            Self::Slow => "SL",
+        }
+    }
+
+    fn color(self) -> Color {
+        match self {
+            Self::Shield => Color::new(0.30, 0.72, 1.0, 1.0),
+            Self::Double => Color::new(1.0, 0.84, 0.34, 1.0),
+            Self::Slow => Color::new(0.48, 0.97, 0.90, 1.0),
+        }
+    }
+}
+
+#[derive(Clone, Copy)]
+struct SpawnedPowerUp {
+    kind: PowerUpKind,
+    position: IVec2,
+    ttl: f32,
 }
 
 #[derive(Clone)]
@@ -96,10 +137,15 @@ struct Game {
     queued_direction: Option<Direction>,
     food: IVec2,
     bombs: Vec<IVec2>,
+    power_up: Option<SpawnedPowerUp>,
     phase: Phase,
     score: u32,
     best_score: u32,
     rounds_played: u32,
+    foods_eaten: u32,
+    shield_active: bool,
+    multiplier_timer: f32,
+    slow_timer: f32,
     high_scores: Vec<HighScoreEntry>,
     score_recorded: bool,
     step_timer: f32,
@@ -112,6 +158,7 @@ struct SoundBank {
     music: Option<Sound>,
     key: Option<Sound>,
     eat: Option<Sound>,
+    power_up: Option<Sound>,
     boom: Option<Sound>,
     game_over: Option<Sound>,
 }
@@ -124,10 +171,15 @@ impl Game {
             queued_direction: None,
             food: ivec2(0, 0),
             bombs: Vec::new(),
+            power_up: None,
             phase: Phase::Title,
             score: 0,
             best_score: 0,
             rounds_played: 0,
+            foods_eaten: 0,
+            shield_active: false,
+            multiplier_timer: 0.0,
+            slow_timer: 0.0,
             high_scores: load_high_scores(),
             score_recorded: false,
             step_timer: 0.0,
@@ -153,11 +205,16 @@ impl Game {
         self.direction = Direction::Right;
         self.queued_direction = None;
         self.score = 0;
+        self.foods_eaten = 0;
+        self.shield_active = false;
+        self.multiplier_timer = 0.0;
+        self.slow_timer = 0.0;
         self.score_recorded = false;
         self.step_timer = 0.0;
         self.step_delay = BASE_STEP_DELAY;
         self.food_flash = 0.0;
         self.death_flash = 0.0;
+        self.power_up = None;
         self.bombs = self.spawn_bombs(initial_bomb_count(self.score));
         self.food = self.spawn_food();
     }
@@ -175,6 +232,10 @@ impl Game {
         self.queued_direction = None;
         self.score = 120;
         self.best_score = 240;
+        self.foods_eaten = 12;
+        self.shield_active = true;
+        self.multiplier_timer = 6.4;
+        self.slow_timer = 0.0;
         self.step_delay = speed_for_score(self.score);
         self.step_timer = 0.0;
         self.food_flash = 0.24;
@@ -195,6 +256,11 @@ impl Game {
         ];
         self.food = ivec2(18, 8);
         self.bombs = vec![ivec2(7, 7), ivec2(18, 16), ivec2(8, 17)];
+        self.power_up = Some(SpawnedPowerUp {
+            kind: PowerUpKind::Slow,
+            position: ivec2(5, 13),
+            ttl: 7.0,
+        });
     }
 
     fn configure_showcase_game_over(&mut self) {
@@ -202,6 +268,10 @@ impl Game {
         self.phase = Phase::GameOver;
         self.score = 190;
         self.best_score = 260;
+        self.foods_eaten = 19;
+        self.shield_active = false;
+        self.multiplier_timer = 0.0;
+        self.slow_timer = 0.0;
         self.death_flash = 0.25;
         self.food_flash = 0.0;
         self.direction = Direction::Up;
@@ -219,6 +289,7 @@ impl Game {
         ];
         self.food = ivec2(15, 14);
         self.bombs = vec![ivec2(12, 10), ivec2(16, 7), ivec2(5, 15)];
+        self.power_up = None;
     }
 
     fn spawn_food(&self) -> IVec2 {
@@ -227,7 +298,13 @@ impl Game {
                 macroquad::rand::gen_range(0, GRID_SIZE),
                 macroquad::rand::gen_range(0, GRID_SIZE),
             );
-            if !self.snake.contains(&candidate) && !self.bombs.contains(&candidate) {
+            if !self.snake.contains(&candidate)
+                && !self.bombs.contains(&candidate)
+                && self
+                    .power_up
+                    .map(|item| item.position != candidate)
+                    .unwrap_or(true)
+            {
                 return candidate;
             }
         }
@@ -243,11 +320,44 @@ impl Game {
             if !self.snake.contains(&candidate)
                 && candidate != self.food
                 && !bombs.contains(&candidate)
+                && self
+                    .power_up
+                    .map(|item| item.position != candidate)
+                    .unwrap_or(true)
             {
                 bombs.push(candidate);
             }
         }
         bombs
+    }
+
+    fn spawn_power_up(&self) -> Option<SpawnedPowerUp> {
+        for _ in 0..128 {
+            let candidate = ivec2(
+                macroquad::rand::gen_range(0, GRID_SIZE),
+                macroquad::rand::gen_range(0, GRID_SIZE),
+            );
+            if self.snake.contains(&candidate)
+                || self.bombs.contains(&candidate)
+                || candidate == self.food
+            {
+                continue;
+            }
+
+            let kind = match macroquad::rand::gen_range(0, 3) {
+                0 => PowerUpKind::Shield,
+                1 => PowerUpKind::Double,
+                _ => PowerUpKind::Slow,
+            };
+
+            return Some(SpawnedPowerUp {
+                kind,
+                position: candidate,
+                ttl: 10.0,
+            });
+        }
+
+        None
     }
 
     fn sync_bombs(&mut self) {
@@ -257,6 +367,42 @@ impl Game {
             self.bombs.append(&mut additions);
         } else if self.bombs.len() > target {
             self.bombs.truncate(target);
+        }
+    }
+
+    fn maybe_spawn_power_up(&mut self) {
+        if self.power_up.is_none() && self.foods_eaten > 0 && self.foods_eaten % 3 == 0 {
+            self.power_up = self.spawn_power_up();
+        }
+    }
+
+    fn effective_step_delay(&self) -> f32 {
+        if self.slow_timer > 0.0 {
+            (self.step_delay * 1.55).min(0.24)
+        } else {
+            self.step_delay
+        }
+    }
+
+    fn active_power_up_labels(&self) -> Vec<String> {
+        let mut labels = Vec::new();
+        if self.shield_active {
+            labels.push("Shield ready".to_owned());
+        }
+        if self.multiplier_timer > 0.0 {
+            labels.push(format!("Double {:.1}s", self.multiplier_timer));
+        }
+        if self.slow_timer > 0.0 {
+            labels.push(format!("Slow {:.1}s", self.slow_timer));
+        }
+        labels
+    }
+
+    fn apply_power_up(&mut self, kind: PowerUpKind) {
+        match kind {
+            PowerUpKind::Shield => self.shield_active = true,
+            PowerUpKind::Double => self.multiplier_timer = 9.0,
+            PowerUpKind::Slow => self.slow_timer = 7.0,
         }
     }
 
@@ -357,9 +503,19 @@ impl Game {
             return cues;
         }
 
+        self.multiplier_timer = (self.multiplier_timer - dt).max(0.0);
+        self.slow_timer = (self.slow_timer - dt).max(0.0);
+        if let Some(power_up) = self.power_up.as_mut() {
+            power_up.ttl -= dt;
+            if power_up.ttl <= 0.0 {
+                self.power_up = None;
+            }
+        }
+
         self.step_timer += dt;
-        while self.step_timer >= self.step_delay {
-            self.step_timer -= self.step_delay;
+        let effective_delay = self.effective_step_delay();
+        while self.step_timer >= effective_delay {
+            self.step_timer -= effective_delay;
             if let Some(cue) = self.advance() {
                 cues.push(cue);
                 if matches!(cue, AudioCue::GameOver) {
@@ -384,6 +540,11 @@ impl Game {
         let next_head = self.snake[0] + self.direction.vector();
         let will_grow = next_head == self.food;
         let hit_bomb = self.bombs.contains(&next_head);
+        let picked_power_up = self
+            .power_up
+            .as_ref()
+            .filter(|item| item.position == next_head)
+            .map(|item| item.kind);
         let body_to_check = if will_grow {
             self.snake.len()
         } else {
@@ -407,24 +568,38 @@ impl Game {
         }
 
         if hit_bomb {
-            self.record_score();
-            self.phase = Phase::GameOver;
-            self.death_flash = 0.8;
-            return Some(AudioCue::Boom);
+            if self.shield_active {
+                self.shield_active = false;
+                self.bombs.retain(|&bomb| bomb != next_head);
+            } else {
+                self.record_score();
+                self.phase = Phase::GameOver;
+                self.death_flash = 0.8;
+                return Some(AudioCue::Boom);
+            }
         }
 
         self.snake.insert(0, next_head);
 
         if will_grow {
-            self.score += 10;
+            let gained = if self.multiplier_timer > 0.0 { 20 } else { 10 };
+            self.foods_eaten += 1;
+            self.score += gained;
             self.best_score = self.best_score.max(self.score);
             self.step_delay = speed_for_score(self.score);
             self.food_flash = 0.3;
             self.food = self.spawn_food();
             self.sync_bombs();
+            self.maybe_spawn_power_up();
             return Some(AudioCue::Eat);
         } else {
             self.snake.pop();
+        }
+
+        if let Some(kind) = picked_power_up {
+            self.power_up = None;
+            self.apply_power_up(kind);
+            return Some(AudioCue::PowerUp);
         }
 
         None
@@ -437,6 +612,7 @@ impl SoundBank {
             music: load_generated_sound(generate_music_loop()).await,
             key: load_generated_sound(generate_key_sound()).await,
             eat: load_generated_sound(generate_eat_sound()).await,
+            power_up: load_generated_sound(generate_power_up_sound()).await,
             boom: load_generated_sound(generate_boom_sound()).await,
             game_over: load_generated_sound(generate_game_over_sound()).await,
         }
@@ -474,6 +650,17 @@ impl SoundBank {
                         PlaySoundParams {
                             looped: false,
                             volume: 0.45,
+                        },
+                    );
+                }
+            }
+            AudioCue::PowerUp => {
+                if let Some(sound) = &self.power_up {
+                    play_sound(
+                        sound,
+                        PlaySoundParams {
+                            looped: false,
+                            volume: 0.48,
                         },
                     );
                 }
@@ -641,6 +828,7 @@ fn draw_scene(game: &Game) {
     draw_grid(&layout, time);
     draw_food(&layout, game, time);
     draw_bombs(&layout, game, time);
+    draw_power_up(&layout, game, time);
     draw_snake(&layout, game, time);
     draw_panel(&layout, game);
     draw_overlay(&layout, game, time);
@@ -894,6 +1082,54 @@ fn draw_bombs(layout: &Layout, game: &Game, time: f32) {
     }
 }
 
+fn draw_power_up(layout: &Layout, game: &Game, time: f32) {
+    let Some(power_up) = game.power_up else {
+        return;
+    };
+
+    let cell = layout.grid.w / GRID_SIZE as f32;
+    let center = vec2(
+        layout.grid.x + (power_up.position.x as f32 + 0.5) * cell,
+        layout.grid.y + (power_up.position.y as f32 + 0.5) * cell,
+    );
+    let glow = 0.88 + (time * 6.0).sin() * 0.08;
+    let color = power_up.kind.color();
+
+    draw_circle(
+        center.x,
+        center.y,
+        cell * 0.44,
+        Color::new(color.r, color.g, color.b, 0.10),
+    );
+    draw_poly(
+        center.x,
+        center.y,
+        6,
+        cell * 0.28 * glow,
+        time * 40.0,
+        color,
+    );
+    draw_circle(
+        center.x,
+        center.y,
+        cell * 0.16,
+        Color::new(0.05, 0.08, 0.11, 0.92),
+    );
+
+    let label = power_up.kind.short_label();
+    let metrics = measure_text(label, None, 18, 1.0);
+    draw_text_ex(
+        label,
+        center.x - metrics.width * 0.5,
+        center.y + 6.0,
+        TextParams {
+            font_size: 18,
+            color: WHITE,
+            ..Default::default()
+        },
+    );
+}
+
 fn draw_panel(layout: &Layout, game: &Game) {
     let left = layout.panel.x + 26.0;
     let mut y = layout.panel.y + 38.0;
@@ -977,7 +1213,7 @@ fn draw_panel(layout: &Layout, game: &Game) {
         ("Bombs", game.bombs.len().to_string()),
         (
             "Speed",
-            format!("{:.1}x", BASE_STEP_DELAY / game.step_delay),
+            format!("{:.1}x", BASE_STEP_DELAY / game.effective_step_delay()),
         ),
         ("Rounds", game.rounds_played.to_string()),
     ];
@@ -1004,6 +1240,65 @@ fn draw_panel(layout: &Layout, game: &Game) {
             },
         );
         y += 34.0;
+    }
+
+    y += 8.0;
+    draw_text_ex(
+        "Power-Ups",
+        left,
+        y,
+        TextParams {
+            font_size: 22,
+            color: Color::new(0.36, 0.94, 0.84, 1.0),
+            ..Default::default()
+        },
+    );
+    y += 28.0;
+
+    let pickup_text = if let Some(power_up) = game.power_up {
+        format!("Board: {} {:.1}s", power_up.kind.label(), power_up.ttl)
+    } else {
+        "Board: none".to_owned()
+    };
+    draw_text_ex(
+        &pickup_text,
+        left,
+        y,
+        TextParams {
+            font_size: 18,
+            color: Color::new(0.78, 0.87, 0.88, 1.0),
+            ..Default::default()
+        },
+    );
+    y += 24.0;
+
+    let active_effects = game.active_power_up_labels();
+    if active_effects.is_empty() {
+        draw_text_ex(
+            "Active: none",
+            left,
+            y,
+            TextParams {
+                font_size: 18,
+                color: Color::new(0.62, 0.78, 0.80, 1.0),
+                ..Default::default()
+            },
+        );
+        y += 24.0;
+    } else {
+        for effect in active_effects {
+            draw_text_ex(
+                &format!("Active: {effect}"),
+                left,
+                y,
+                TextParams {
+                    font_size: 18,
+                    color: Color::new(0.92, 0.98, 0.98, 1.0),
+                    ..Default::default()
+                },
+            );
+            y += 24.0;
+        }
     }
 
     y += 12.0;
@@ -1092,6 +1387,9 @@ fn draw_panel(layout: &Layout, game: &Game) {
 
     let footer = match game.phase {
         Phase::Title => "Start moving to launch immediately.",
+        Phase::Playing if game.power_up.is_some() => {
+            "Grab the power-up before it expires and manage the bombs."
+        }
         Phase::Playing => "Eat the ember core and stay clear of bombs.",
         Phase::Paused => "Paused. Resume with Enter, Space, or Esc.",
         Phase::GameOver => "Crash or bomb hit. Restart with R or Enter.",
@@ -1114,7 +1412,7 @@ fn draw_overlay(layout: &Layout, game: &Game, time: f32) {
     let (title, body) = match game.phase {
         Phase::Title => (
             "Press Enter",
-            "Use WASD or arrow keys to start.\nCollect food, dodge bombs, and avoid your own trail.",
+            "Use WASD or arrow keys to start.\nCollect food, grab power-ups, dodge bombs, and avoid your own trail.",
         ),
         Phase::Paused => (
             "Paused",
@@ -1241,6 +1539,25 @@ fn generate_eat_sound() -> Vec<u8> {
         let tone = (std::f32::consts::TAU * freq * t).sin();
         let sparkle = (std::f32::consts::TAU * (freq * 1.9) * t).sin() * 0.25;
         samples.push((tone * 0.9 + sparkle) * envelope * 0.42);
+    }
+
+    write_wav(&samples, SAMPLE_RATE)
+}
+
+fn generate_power_up_sound() -> Vec<u8> {
+    const SAMPLE_RATE: u32 = 44_100;
+    let duration = 0.18;
+    let total = (SAMPLE_RATE as f32 * duration) as usize;
+    let mut samples = Vec::with_capacity(total);
+
+    for index in 0..total {
+        let t = index as f32 / SAMPLE_RATE as f32;
+        let progress = index as f32 / total as f32;
+        let envelope = adsr(progress, 0.01, 0.03, 0.85, 0.40);
+        let base = (std::f32::consts::TAU * (640.0 + progress * 260.0) * t).sin();
+        let octave = (std::f32::consts::TAU * (1280.0 + progress * 320.0) * t).sin() * 0.35;
+        let shimmer = (std::f32::consts::TAU * 12.0 * t).sin() * 0.08;
+        samples.push((base * 0.9 + octave + shimmer) * envelope * 0.38);
     }
 
     write_wav(&samples, SAMPLE_RATE)
