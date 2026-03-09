@@ -1,8 +1,8 @@
 use macroquad::prelude::*;
 
 use super::{
-    AudioCue, Direction, GRID_SIZE, Game, HighScoreEntry, Phase, PowerUpKind, START_LENGTH,
-    SpawnedPowerUp, initial_bomb_count, speed_for_score, target_bomb_count,
+    AudioCue, Direction, GRID_SIZE, Game, HighScoreEntry, LevelTheme, Phase, PowerUpKind,
+    START_LENGTH, SpawnedPowerUp, initial_bomb_count, speed_for_score, target_bomb_count,
 };
 use crate::storage::{load_high_scores, register_high_score, save_high_scores};
 
@@ -136,11 +136,20 @@ impl Game {
     }
 
     pub fn effective_step_delay(&self) -> f32 {
+        let themed_delay = self.step_delay * self.level_theme().speed_multiplier();
         if self.slow_timer > 0.0 {
-            (self.step_delay * 1.55).min(0.24)
+            (themed_delay * 1.55).min(0.24)
         } else {
-            self.step_delay
+            themed_delay
         }
+    }
+
+    pub fn level_theme(&self) -> LevelTheme {
+        LevelTheme::for_score(self.score)
+    }
+
+    pub fn next_theme_score(&self) -> Option<u32> {
+        self.level_theme().next_threshold()
     }
 
     pub fn active_power_up_labels(&self) -> Vec<String> {

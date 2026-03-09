@@ -1,7 +1,11 @@
 use macroquad::prelude::*;
 use std::path::Path;
 
-use crate::{audio::SoundBank, game::Game, ui::draw_scene};
+use crate::{
+    audio::SoundBank,
+    game::{Game, LevelTheme},
+    ui::draw_scene,
+};
 
 pub fn window_conf() -> Conf {
     Conf {
@@ -22,8 +26,9 @@ pub async fn run() {
     }
 
     let mut game = Game::new();
-    let sounds = SoundBank::load().await;
-    sounds.start_music();
+    let mut sounds = SoundBank::load().await;
+    let mut active_theme = game.level_theme();
+    sounds.start_music(active_theme);
 
     loop {
         let dt = get_frame_time().min(0.05);
@@ -33,8 +38,17 @@ pub async fn run() {
         for cue in game.update(dt) {
             sounds.play(cue);
         }
+        sync_theme_audio(&game, &mut sounds, &mut active_theme);
         draw_scene(&game);
         next_frame().await;
+    }
+}
+
+fn sync_theme_audio(game: &Game, sounds: &mut SoundBank, active_theme: &mut LevelTheme) {
+    let next_theme = game.level_theme();
+    if next_theme != *active_theme {
+        sounds.apply_theme(next_theme);
+        *active_theme = next_theme;
     }
 }
 

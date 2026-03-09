@@ -45,6 +45,79 @@ pub enum Phase {
     GameOver,
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum LevelTheme {
+    Afterglow,
+    Voltage,
+    Overdrive,
+    Singularity,
+}
+
+impl LevelTheme {
+    pub fn for_score(score: u32) -> Self {
+        match score {
+            0..=79 => Self::Afterglow,
+            80..=179 => Self::Voltage,
+            180..=319 => Self::Overdrive,
+            _ => Self::Singularity,
+        }
+    }
+
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Afterglow => "Afterglow",
+            Self::Voltage => "Voltage",
+            Self::Overdrive => "Overdrive",
+            Self::Singularity => "Singularity",
+        }
+    }
+
+    pub fn next_threshold(self) -> Option<u32> {
+        match self {
+            Self::Afterglow => Some(80),
+            Self::Voltage => Some(180),
+            Self::Overdrive => Some(320),
+            Self::Singularity => None,
+        }
+    }
+
+    pub fn speed_multiplier(self) -> f32 {
+        match self {
+            Self::Afterglow => 1.00,
+            Self::Voltage => 0.96,
+            Self::Overdrive => 0.92,
+            Self::Singularity => 0.88,
+        }
+    }
+
+    pub fn music_volume(self) -> f32 {
+        match self {
+            Self::Afterglow => 0.20,
+            Self::Voltage => 0.24,
+            Self::Overdrive => 0.28,
+            Self::Singularity => 0.33,
+        }
+    }
+
+    pub fn sfx_gain(self) -> f32 {
+        match self {
+            Self::Afterglow => 1.00,
+            Self::Voltage => 1.07,
+            Self::Overdrive => 1.14,
+            Self::Singularity => 1.22,
+        }
+    }
+
+    pub fn visual_intensity(self) -> f32 {
+        match self {
+            Self::Afterglow => 0.00,
+            Self::Voltage => 1.00,
+            Self::Overdrive => 2.00,
+            Self::Singularity => 3.00,
+        }
+    }
+}
+
 #[derive(Clone, Copy)]
 pub enum AudioCue {
     Key,

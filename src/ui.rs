@@ -1,6 +1,6 @@
 use macroquad::prelude::*;
 
-use crate::game::{BASE_STEP_DELAY, BOARD_PADDING, Direction, GRID_SIZE, Game, Phase};
+use crate::game::{BASE_STEP_DELAY, BOARD_PADDING, Direction, GRID_SIZE, Game, LevelTheme, Phase};
 
 struct Layout {
     board: Rect,
@@ -8,29 +8,58 @@ struct Layout {
     panel: Rect,
 }
 
+#[derive(Clone, Copy)]
+struct ThemePalette {
+    background_top: Color,
+    background_bottom: Color,
+    ambient_a: Color,
+    ambient_b: Color,
+    ambient_c: Color,
+    board_fill: Color,
+    panel_fill: Color,
+    board_glow: Color,
+    panel_glow: Color,
+    grid_primary: Color,
+    grid_secondary: Color,
+    grid_highlight: Color,
+    snake_head: Color,
+    snake_body_a: Color,
+    snake_body_b: Color,
+    food_outer: Color,
+    food_inner: Color,
+    bomb_glow: Color,
+    bomb_shell: Color,
+    title_text: Color,
+    accent_text: Color,
+    body_text: Color,
+    muted_text: Color,
+}
+
+#[derive(Clone, Copy)]
+enum GridPattern {
+    Checker,
+    Scanlines,
+    Diagonal,
+    Pulse,
+}
+
 pub fn draw_scene(game: &Game) {
     let time = get_time() as f32;
     let layout = layout();
+    let theme = game.level_theme();
+    let palette = theme_palette(theme);
 
-    draw_background(time);
-    draw_shadowed_card(
-        layout.board,
-        Color::new(0.04, 0.09, 0.10, 0.92),
-        Color::new(0.13, 0.92, 0.76, 0.22),
-    );
-    draw_shadowed_card(
-        layout.panel,
-        Color::new(0.05, 0.08, 0.11, 0.86),
-        Color::new(0.30, 0.89, 0.91, 0.18),
-    );
+    draw_background(time, theme, palette);
+    draw_shadowed_card(layout.board, palette.board_fill, palette.board_glow);
+    draw_shadowed_card(layout.panel, palette.panel_fill, palette.panel_glow);
 
-    draw_grid(&layout, time);
-    draw_food(&layout, game, time);
-    draw_bombs(&layout, game, time);
-    draw_power_up(&layout, game, time);
-    draw_snake(&layout, game, time);
-    draw_panel(&layout, game);
-    draw_overlay(&layout, game, time);
+    draw_grid(&layout, time, theme, palette);
+    draw_food(&layout, game, time, palette);
+    draw_bombs(&layout, game, time, palette);
+    draw_power_up(&layout, game, time, palette);
+    draw_snake(&layout, game, time, palette);
+    draw_panel(&layout, game, theme, palette);
+    draw_overlay(&layout, game, time, palette);
 
     if game.death_flash > 0.0 {
         let alpha = game.death_flash * 0.18;
@@ -94,16 +123,14 @@ fn layout() -> Layout {
     }
 }
 
-fn draw_background(time: f32) {
-    let top = Color::new(0.02, 0.06, 0.08, 1.0);
-    let bottom = Color::new(0.01, 0.02, 0.04, 1.0);
-    clear_background(bottom);
+fn draw_background(time: f32, theme: LevelTheme, palette: ThemePalette) {
+    clear_background(palette.background_bottom);
 
     let bands = 48.0;
     let band_height = screen_height() / bands;
     for index in 0..bands as i32 {
         let t = index as f32 / (bands - 1.0);
-        let shade = lerp_color(top, bottom, t);
+        let shade = lerp_color(palette.background_top, palette.background_bottom, t);
         draw_rectangle(
             0.0,
             band_height * index as f32,
@@ -120,7 +147,7 @@ fn draw_background(time: f32) {
                 screen_height() * 0.25,
             ),
             screen_width() * 0.26,
-            Color::new(0.13, 0.91, 0.77, 0.09),
+            palette.ambient_a,
         ),
         (
             vec2(
@@ -128,12 +155,12 @@ fn draw_background(time: f32) {
                 screen_height() * 0.20 + time.cos() * 28.0,
             ),
             screen_width() * 0.22,
-            Color::new(0.23, 0.47, 0.99, 0.08),
+            palette.ambient_b,
         ),
         (
             vec2(screen_width() * 0.62, screen_height() * 0.82),
-            screen_width() * 0.28,
-            Color::new(1.0, 0.48, 0.22, 0.05),
+            screen_width() * theme_radius(theme),
+            palette.ambient_c,
         ),
     ];
 
@@ -154,20 +181,51 @@ fn draw_shadowed_card(rect: Rect, fill: Color, glow: Color) {
     draw_rectangle_lines(rect.x, rect.y, rect.w, rect.h, 2.0, glow);
 }
 
-fn draw_grid(layout: &Layout, time: f32) {
+fn draw_grid(layout: &Layout, time: f32, theme: LevelTheme, palette: ThemePalette) {
     let cell = layout.grid.w / GRID_SIZE as f32;
     for y in 0..GRID_SIZE {
         for x in 0..GRID_SIZE {
-            let checker = (x + y) % 2;
-            let base = if checker == 0 {
-                Color::new(0.06, 0.12, 0.13, 0.95)
-            } else {
-                Color::new(0.05, 0.10, 0.11, 0.95)
+            let base = match grid_pattern(theme) {
+                GridPattern::Checker => {
+                    if (x + y) % 2 == 0 {
+                        palette.grid_primary
+                    } else {
+                        palette.grid_secondary
+                    }
+                }
+                GridPattern::Scanlines => {
+                    let stripe = if y % 2 == 0 { 0.14 } else { -0.04 };
+                    shift_color(
+                        if x % 3 == 0 {
+                            palette.grid_secondary
+                        } else {
+                            palette.grid_primary
+                        },
+                        stripe,
+                    )
+                }
+                GridPattern::Diagonal => {
+                    let diagonal = ((x - y).abs() % 4) == 0;
+                    if diagonal {
+                        lerp_color(palette.grid_primary, palette.grid_highlight, 0.38)
+                    } else if (x + y) % 2 == 0 {
+                        palette.grid_primary
+                    } else {
+                        palette.grid_secondary
+                    }
+                }
+                GridPattern::Pulse => {
+                    let center = vec2(GRID_SIZE as f32 * 0.5, GRID_SIZE as f32 * 0.5);
+                    let offset = vec2(x as f32 - center.x, y as f32 - center.y);
+                    let distance = offset.length();
+                    let wave = ((distance * 0.7) - time * 4.2).sin() * 0.08;
+                    shift_color(palette.grid_primary, wave)
+                }
             };
 
-            let shimmer =
-                (((x as f32 * 0.35) + (y as f32 * 0.27) + time * 1.2).sin() + 1.0) * 0.015;
-            let color = Color::new(base.r + shimmer, base.g + shimmer, base.b + shimmer, base.a);
+            let shimmer = (((x as f32 * 0.35) + (y as f32 * 0.27) + time * 1.2).sin() + 1.0)
+                * (0.010 + theme.visual_intensity() * 0.003);
+            let color = shift_color(base, shimmer);
             draw_rectangle(
                 layout.grid.x + x as f32 * cell,
                 layout.grid.y + y as f32 * cell,
@@ -179,7 +237,7 @@ fn draw_grid(layout: &Layout, time: f32) {
     }
 }
 
-fn draw_snake(layout: &Layout, game: &Game, time: f32) {
+fn draw_snake(layout: &Layout, game: &Game, time: f32, palette: ThemePalette) {
     let cell = layout.grid.w / GRID_SIZE as f32;
     let len = game.snake.len().max(1) as f32;
 
@@ -190,13 +248,9 @@ fn draw_snake(layout: &Layout, game: &Game, time: f32) {
         let t = index as f32 / len;
         let color = if index == 0 {
             let pulse = 0.08 * ((time * 6.0).sin() + 1.0);
-            Color::new(0.43, 0.98 - pulse * 0.2, 0.78 + pulse, 1.0)
+            shift_color(palette.snake_head, pulse)
         } else {
-            lerp_color(
-                Color::new(0.11, 0.74, 0.53, 1.0),
-                Color::new(0.20, 0.90, 0.84, 1.0),
-                1.0 - t,
-            )
+            lerp_color(palette.snake_body_a, palette.snake_body_b, 1.0 - t)
         };
 
         draw_rectangle(
@@ -255,7 +309,7 @@ fn draw_snake(layout: &Layout, game: &Game, time: f32) {
     }
 }
 
-fn draw_food(layout: &Layout, game: &Game, time: f32) {
+fn draw_food(layout: &Layout, game: &Game, time: f32, palette: ThemePalette) {
     let cell = layout.grid.w / GRID_SIZE as f32;
     let center = vec2(
         layout.grid.x + (game.food.x as f32 + 0.5) * cell,
@@ -264,28 +318,23 @@ fn draw_food(layout: &Layout, game: &Game, time: f32) {
     let pulse = 0.82 + (time * 5.0).sin() * 0.08 + game.food_flash * 0.25;
     let ring_alpha = 0.12 + game.food_flash * 0.3;
 
-    draw_circle(
-        center.x,
-        center.y,
-        cell * 0.38 * pulse,
-        Color::new(1.0, 0.43, 0.27, 0.95),
-    );
-    draw_circle(
-        center.x,
-        center.y,
-        cell * 0.20,
-        Color::new(1.0, 0.85, 0.44, 0.95),
-    );
+    draw_circle(center.x, center.y, cell * 0.38 * pulse, palette.food_outer);
+    draw_circle(center.x, center.y, cell * 0.20, palette.food_inner);
     draw_circle_lines(
         center.x,
         center.y,
         cell * (0.46 + game.food_flash * 0.16),
         2.0,
-        Color::new(1.0, 0.52, 0.24, ring_alpha),
+        Color::new(
+            palette.food_outer.r,
+            palette.food_outer.g,
+            palette.food_outer.b,
+            ring_alpha,
+        ),
     );
 }
 
-fn draw_bombs(layout: &Layout, game: &Game, time: f32) {
+fn draw_bombs(layout: &Layout, game: &Game, time: f32, palette: ThemePalette) {
     let cell = layout.grid.w / GRID_SIZE as f32;
 
     for (index, bomb) in game.bombs.iter().enumerate() {
@@ -296,18 +345,8 @@ fn draw_bombs(layout: &Layout, game: &Game, time: f32) {
         let pulse = 0.85 + ((time * 4.5) + index as f32 * 0.7).sin() * 0.08;
         let shell = cell * 0.26 * pulse;
 
-        draw_circle(
-            center.x,
-            center.y,
-            cell * 0.44,
-            Color::new(1.0, 0.22, 0.12, 0.10),
-        );
-        draw_circle(
-            center.x,
-            center.y,
-            shell,
-            Color::new(0.86, 0.12, 0.09, 0.98),
-        );
+        draw_circle(center.x, center.y, cell * 0.44, palette.bomb_glow);
+        draw_circle(center.x, center.y, shell, palette.bomb_shell);
         draw_circle(
             center.x,
             center.y,
@@ -331,7 +370,7 @@ fn draw_bombs(layout: &Layout, game: &Game, time: f32) {
     }
 }
 
-fn draw_power_up(layout: &Layout, game: &Game, time: f32) {
+fn draw_power_up(layout: &Layout, game: &Game, time: f32, palette: ThemePalette) {
     let Some(power_up) = game.power_up else {
         return;
     };
@@ -348,7 +387,12 @@ fn draw_power_up(layout: &Layout, game: &Game, time: f32) {
         center.x,
         center.y,
         cell * 0.44,
-        Color::new(color.r, color.g, color.b, 0.10),
+        Color::new(
+            lerp_color(color, palette.grid_highlight, 0.18).r,
+            lerp_color(color, palette.grid_highlight, 0.18).g,
+            lerp_color(color, palette.grid_highlight, 0.18).b,
+            0.12,
+        ),
     );
     draw_poly(
         center.x,
@@ -379,7 +423,7 @@ fn draw_power_up(layout: &Layout, game: &Game, time: f32) {
     );
 }
 
-fn draw_panel(layout: &Layout, game: &Game) {
+fn draw_panel(layout: &Layout, game: &Game, theme: LevelTheme, palette: ThemePalette) {
     let left = layout.panel.x + 26.0;
     let mut y = layout.panel.y + 38.0;
 
@@ -389,19 +433,19 @@ fn draw_panel(layout: &Layout, game: &Game) {
         y,
         TextParams {
             font_size: 42,
-            color: Color::new(0.90, 0.98, 0.98, 1.0),
+            color: palette.title_text,
             ..Default::default()
         },
     );
 
     y += 34.0;
     draw_text_ex(
-        "Arcade-speed desktop snake in Rust",
+        &format!("{} theme live on the board", theme.name()),
         left,
         y,
         TextParams {
             font_size: 20,
-            color: Color::new(0.62, 0.78, 0.80, 1.0),
+            color: palette.body_text,
             ..Default::default()
         },
     );
@@ -430,7 +474,7 @@ fn draw_panel(layout: &Layout, game: &Game) {
         score_card.y + 28.0,
         TextParams {
             font_size: 22,
-            color: Color::new(0.60, 0.76, 0.79, 1.0),
+            color: palette.body_text,
             ..Default::default()
         },
     );
@@ -440,7 +484,7 @@ fn draw_panel(layout: &Layout, game: &Game) {
         score_card.y + 84.0,
         TextParams {
             font_size: 52,
-            color: Color::new(0.95, 0.99, 0.99, 1.0),
+            color: palette.title_text,
             ..Default::default()
         },
     );
@@ -450,19 +494,26 @@ fn draw_panel(layout: &Layout, game: &Game) {
         score_card.y + 84.0,
         TextParams {
             font_size: 24,
-            color: Color::new(0.35, 0.94, 0.84, 1.0),
+            color: palette.accent_text,
             ..Default::default()
         },
     );
 
     y += 136.0;
-    let stats: [(&str, String); 5] = [
+    let stats: [(&str, String); 7] = [
+        ("Theme", theme.name().to_owned()),
         ("Status", game.status_label().to_string()),
         ("Heading", game.direction.label().to_string()),
         ("Bombs", game.bombs.len().to_string()),
         (
             "Speed",
             format!("{:.1}x", BASE_STEP_DELAY / game.effective_step_delay()),
+        ),
+        (
+            "Next",
+            game.next_theme_score()
+                .map(|score| format!("{score} pts"))
+                .unwrap_or_else(|| "MAX".to_owned()),
         ),
         ("Rounds", game.rounds_played.to_string()),
     ];
@@ -474,7 +525,7 @@ fn draw_panel(layout: &Layout, game: &Game) {
             y,
             TextParams {
                 font_size: 20,
-                color: Color::new(0.58, 0.72, 0.74, 1.0),
+                color: palette.muted_text,
                 ..Default::default()
             },
         );
@@ -484,7 +535,7 @@ fn draw_panel(layout: &Layout, game: &Game) {
             y,
             TextParams {
                 font_size: 24,
-                color: Color::new(0.93, 0.98, 0.97, 1.0),
+                color: palette.title_text,
                 ..Default::default()
             },
         );
@@ -498,7 +549,7 @@ fn draw_panel(layout: &Layout, game: &Game) {
         y,
         TextParams {
             font_size: 22,
-            color: Color::new(0.36, 0.94, 0.84, 1.0),
+            color: palette.accent_text,
             ..Default::default()
         },
     );
@@ -515,7 +566,7 @@ fn draw_panel(layout: &Layout, game: &Game) {
         y,
         TextParams {
             font_size: 18,
-            color: Color::new(0.78, 0.87, 0.88, 1.0),
+            color: palette.body_text,
             ..Default::default()
         },
     );
@@ -529,7 +580,7 @@ fn draw_panel(layout: &Layout, game: &Game) {
             y,
             TextParams {
                 font_size: 18,
-                color: Color::new(0.62, 0.78, 0.80, 1.0),
+                color: palette.muted_text,
                 ..Default::default()
             },
         );
@@ -542,7 +593,7 @@ fn draw_panel(layout: &Layout, game: &Game) {
                 y,
                 TextParams {
                     font_size: 18,
-                    color: Color::new(0.92, 0.98, 0.98, 1.0),
+                    color: palette.title_text,
                     ..Default::default()
                 },
             );
@@ -557,7 +608,7 @@ fn draw_panel(layout: &Layout, game: &Game) {
         y,
         TextParams {
             font_size: 22,
-            color: Color::new(0.36, 0.94, 0.84, 1.0),
+            color: palette.accent_text,
             ..Default::default()
         },
     );
@@ -577,7 +628,7 @@ fn draw_panel(layout: &Layout, game: &Game) {
             y,
             TextParams {
                 font_size: 20,
-                color: Color::new(0.78, 0.87, 0.88, 1.0),
+                color: palette.body_text,
                 ..Default::default()
             },
         );
@@ -591,7 +642,7 @@ fn draw_panel(layout: &Layout, game: &Game) {
         y,
         TextParams {
             font_size: 22,
-            color: Color::new(0.36, 0.94, 0.84, 1.0),
+            color: palette.accent_text,
             ..Default::default()
         },
     );
@@ -604,7 +655,7 @@ fn draw_panel(layout: &Layout, game: &Game) {
             y,
             TextParams {
                 font_size: 18,
-                color: Color::new(0.62, 0.78, 0.80, 1.0),
+                color: palette.muted_text,
                 ..Default::default()
             },
         );
@@ -616,7 +667,7 @@ fn draw_panel(layout: &Layout, game: &Game) {
                 y,
                 TextParams {
                     font_size: 19,
-                    color: Color::new(0.92, 0.98, 0.98, 1.0),
+                    color: palette.title_text,
                     ..Default::default()
                 },
             );
@@ -626,7 +677,7 @@ fn draw_panel(layout: &Layout, game: &Game) {
                 y,
                 TextParams {
                     font_size: 18,
-                    color: Color::new(0.62, 0.78, 0.80, 1.0),
+                    color: palette.muted_text,
                     ..Default::default()
                 },
             );
@@ -639,7 +690,12 @@ fn draw_panel(layout: &Layout, game: &Game) {
         Phase::Playing if game.power_up.is_some() => {
             "Grab the power-up before it expires and manage the bombs."
         }
-        Phase::Playing => "Eat the ember core and stay clear of bombs.",
+        Phase::Playing => match theme {
+            LevelTheme::Afterglow => "Afterglow is stable. Build score and set the pace.",
+            LevelTheme::Voltage => "Voltage is rising. The board is getting sharper and faster.",
+            LevelTheme::Overdrive => "Overdrive is active. Stay decisive and keep lanes open.",
+            LevelTheme::Singularity => "Singularity is fully live. Everything is running hot.",
+        },
         Phase::Paused => "Paused. Resume with Enter, Space, or Esc.",
         Phase::GameOver => "Crash or bomb hit. Restart with R or Enter.",
     };
@@ -651,13 +707,13 @@ fn draw_panel(layout: &Layout, game: &Game) {
         footer_y,
         TextParams {
             font_size: 18,
-            color: Color::new(0.62, 0.78, 0.80, 1.0),
+            color: palette.muted_text,
             ..Default::default()
         },
     );
 }
 
-fn draw_overlay(layout: &Layout, game: &Game, time: f32) {
+fn draw_overlay(layout: &Layout, game: &Game, time: f32, palette: ThemePalette) {
     let (title, body) = match game.phase {
         Phase::Title => (
             "Press Enter",
@@ -691,17 +747,10 @@ fn draw_overlay(layout: &Layout, game: &Game, time: f32) {
         center_x,
         center_y - 30.0,
         52,
-        Color::new(0.95, 0.99, 0.98, 1.0),
+        palette.title_text,
         pulse,
     );
-    draw_multiline_centered(
-        body,
-        center_x,
-        center_y + 14.0,
-        24,
-        Color::new(0.70, 0.84, 0.85, 1.0),
-        30.0,
-    );
+    draw_multiline_centered(body, center_x, center_y + 14.0, 24, palette.body_text, 30.0);
 }
 
 fn draw_text_centered(text: &str, x: f32, y: f32, font_size: u16, color: Color, scale: f32) {
@@ -750,4 +799,136 @@ fn lerp_color(a: Color, b: Color, t: f32) -> Color {
         a.b + (b.b - a.b) * clamped,
         a.a + (b.a - a.a) * clamped,
     )
+}
+
+fn shift_color(color: Color, amount: f32) -> Color {
+    Color::new(
+        (color.r + amount).clamp(0.0, 1.0),
+        (color.g + amount).clamp(0.0, 1.0),
+        (color.b + amount).clamp(0.0, 1.0),
+        color.a,
+    )
+}
+
+fn grid_pattern(theme: LevelTheme) -> GridPattern {
+    match theme {
+        LevelTheme::Afterglow => GridPattern::Checker,
+        LevelTheme::Voltage => GridPattern::Scanlines,
+        LevelTheme::Overdrive => GridPattern::Diagonal,
+        LevelTheme::Singularity => GridPattern::Pulse,
+    }
+}
+
+fn theme_radius(theme: LevelTheme) -> f32 {
+    match theme {
+        LevelTheme::Afterglow => 0.28,
+        LevelTheme::Voltage => 0.32,
+        LevelTheme::Overdrive => 0.36,
+        LevelTheme::Singularity => 0.42,
+    }
+}
+
+fn theme_palette(theme: LevelTheme) -> ThemePalette {
+    match theme {
+        LevelTheme::Afterglow => ThemePalette {
+            background_top: Color::new(0.02, 0.06, 0.08, 1.0),
+            background_bottom: Color::new(0.01, 0.02, 0.04, 1.0),
+            ambient_a: Color::new(0.13, 0.91, 0.77, 0.09),
+            ambient_b: Color::new(0.23, 0.47, 0.99, 0.08),
+            ambient_c: Color::new(1.0, 0.48, 0.22, 0.05),
+            board_fill: Color::new(0.04, 0.09, 0.10, 0.92),
+            panel_fill: Color::new(0.05, 0.08, 0.11, 0.86),
+            board_glow: Color::new(0.13, 0.92, 0.76, 0.22),
+            panel_glow: Color::new(0.30, 0.89, 0.91, 0.18),
+            grid_primary: Color::new(0.06, 0.12, 0.13, 0.95),
+            grid_secondary: Color::new(0.05, 0.10, 0.11, 0.95),
+            grid_highlight: Color::new(0.19, 0.83, 0.74, 1.0),
+            snake_head: Color::new(0.43, 0.98, 0.78, 1.0),
+            snake_body_a: Color::new(0.11, 0.74, 0.53, 1.0),
+            snake_body_b: Color::new(0.20, 0.90, 0.84, 1.0),
+            food_outer: Color::new(1.0, 0.43, 0.27, 0.95),
+            food_inner: Color::new(1.0, 0.85, 0.44, 0.95),
+            bomb_glow: Color::new(1.0, 0.22, 0.12, 0.10),
+            bomb_shell: Color::new(0.86, 0.12, 0.09, 0.98),
+            title_text: Color::new(0.95, 0.99, 0.99, 1.0),
+            accent_text: Color::new(0.35, 0.94, 0.84, 1.0),
+            body_text: Color::new(0.78, 0.87, 0.88, 1.0),
+            muted_text: Color::new(0.62, 0.78, 0.80, 1.0),
+        },
+        LevelTheme::Voltage => ThemePalette {
+            background_top: Color::new(0.02, 0.04, 0.10, 1.0),
+            background_bottom: Color::new(0.01, 0.01, 0.05, 1.0),
+            ambient_a: Color::new(0.10, 0.72, 1.0, 0.10),
+            ambient_b: Color::new(0.55, 0.42, 1.0, 0.08),
+            ambient_c: Color::new(0.98, 0.72, 0.22, 0.06),
+            board_fill: Color::new(0.03, 0.07, 0.12, 0.93),
+            panel_fill: Color::new(0.04, 0.06, 0.13, 0.88),
+            board_glow: Color::new(0.18, 0.65, 1.0, 0.24),
+            panel_glow: Color::new(0.44, 0.69, 1.0, 0.20),
+            grid_primary: Color::new(0.05, 0.11, 0.18, 0.95),
+            grid_secondary: Color::new(0.04, 0.08, 0.16, 0.95),
+            grid_highlight: Color::new(0.31, 0.74, 1.0, 1.0),
+            snake_head: Color::new(0.54, 0.95, 1.0, 1.0),
+            snake_body_a: Color::new(0.18, 0.59, 0.96, 1.0),
+            snake_body_b: Color::new(0.38, 0.84, 0.99, 1.0),
+            food_outer: Color::new(1.0, 0.58, 0.18, 0.95),
+            food_inner: Color::new(1.0, 0.91, 0.36, 0.95),
+            bomb_glow: Color::new(1.0, 0.26, 0.16, 0.12),
+            bomb_shell: Color::new(0.96, 0.20, 0.14, 0.98),
+            title_text: Color::new(0.94, 0.98, 1.0, 1.0),
+            accent_text: Color::new(0.45, 0.84, 1.0, 1.0),
+            body_text: Color::new(0.80, 0.88, 0.97, 1.0),
+            muted_text: Color::new(0.64, 0.77, 0.91, 1.0),
+        },
+        LevelTheme::Overdrive => ThemePalette {
+            background_top: Color::new(0.08, 0.03, 0.05, 1.0),
+            background_bottom: Color::new(0.03, 0.01, 0.03, 1.0),
+            ambient_a: Color::new(1.0, 0.34, 0.18, 0.10),
+            ambient_b: Color::new(1.0, 0.16, 0.47, 0.08),
+            ambient_c: Color::new(1.0, 0.78, 0.22, 0.06),
+            board_fill: Color::new(0.10, 0.04, 0.07, 0.93),
+            panel_fill: Color::new(0.09, 0.04, 0.06, 0.88),
+            board_glow: Color::new(1.0, 0.36, 0.22, 0.22),
+            panel_glow: Color::new(1.0, 0.57, 0.25, 0.18),
+            grid_primary: Color::new(0.14, 0.06, 0.08, 0.95),
+            grid_secondary: Color::new(0.10, 0.04, 0.07, 0.95),
+            grid_highlight: Color::new(1.0, 0.48, 0.24, 1.0),
+            snake_head: Color::new(1.0, 0.74, 0.28, 1.0),
+            snake_body_a: Color::new(0.99, 0.37, 0.19, 1.0),
+            snake_body_b: Color::new(1.0, 0.62, 0.20, 1.0),
+            food_outer: Color::new(1.0, 0.26, 0.20, 0.95),
+            food_inner: Color::new(1.0, 0.87, 0.33, 0.95),
+            bomb_glow: Color::new(1.0, 0.18, 0.12, 0.12),
+            bomb_shell: Color::new(0.97, 0.14, 0.10, 0.98),
+            title_text: Color::new(1.0, 0.96, 0.94, 1.0),
+            accent_text: Color::new(1.0, 0.67, 0.28, 1.0),
+            body_text: Color::new(0.97, 0.85, 0.80, 1.0),
+            muted_text: Color::new(0.85, 0.68, 0.61, 1.0),
+        },
+        LevelTheme::Singularity => ThemePalette {
+            background_top: Color::new(0.02, 0.02, 0.08, 1.0),
+            background_bottom: Color::new(0.00, 0.00, 0.03, 1.0),
+            ambient_a: Color::new(0.58, 0.38, 1.0, 0.10),
+            ambient_b: Color::new(0.16, 0.92, 1.0, 0.08),
+            ambient_c: Color::new(1.0, 0.20, 0.68, 0.07),
+            board_fill: Color::new(0.04, 0.03, 0.11, 0.94),
+            panel_fill: Color::new(0.03, 0.03, 0.10, 0.89),
+            board_glow: Color::new(0.69, 0.42, 1.0, 0.24),
+            panel_glow: Color::new(0.24, 0.90, 1.0, 0.18),
+            grid_primary: Color::new(0.06, 0.05, 0.16, 0.95),
+            grid_secondary: Color::new(0.05, 0.04, 0.12, 0.95),
+            grid_highlight: Color::new(0.75, 0.46, 1.0, 1.0),
+            snake_head: Color::new(0.76, 0.95, 1.0, 1.0),
+            snake_body_a: Color::new(0.48, 0.44, 1.0, 1.0),
+            snake_body_b: Color::new(0.20, 0.95, 1.0, 1.0),
+            food_outer: Color::new(1.0, 0.38, 0.74, 0.95),
+            food_inner: Color::new(0.98, 0.93, 0.44, 0.95),
+            bomb_glow: Color::new(1.0, 0.20, 0.54, 0.12),
+            bomb_shell: Color::new(0.93, 0.16, 0.44, 0.98),
+            title_text: Color::new(0.96, 0.97, 1.0, 1.0),
+            accent_text: Color::new(0.52, 0.91, 1.0, 1.0),
+            body_text: Color::new(0.83, 0.87, 0.98, 1.0),
+            muted_text: Color::new(0.69, 0.75, 0.92, 1.0),
+        },
+    }
 }

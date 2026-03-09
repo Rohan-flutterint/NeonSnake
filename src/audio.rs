@@ -1,6 +1,8 @@
-use macroquad::audio::{PlaySoundParams, Sound, load_sound_from_bytes, play_sound};
+use macroquad::audio::{
+    PlaySoundParams, Sound, load_sound_from_bytes, play_sound, set_sound_volume,
+};
 
-use crate::game::AudioCue;
+use crate::game::{AudioCue, LevelTheme};
 
 pub struct SoundBank {
     music: Option<Sound>,
@@ -9,6 +11,7 @@ pub struct SoundBank {
     power_up: Option<Sound>,
     boom: Option<Sound>,
     game_over: Option<Sound>,
+    current_theme: LevelTheme,
 }
 
 impl SoundBank {
@@ -20,22 +23,36 @@ impl SoundBank {
             power_up: load_generated_sound(generate_power_up_sound()).await,
             boom: load_generated_sound(generate_boom_sound()).await,
             game_over: load_generated_sound(generate_game_over_sound()).await,
+            current_theme: LevelTheme::Afterglow,
         }
     }
 
-    pub fn start_music(&self) {
+    pub fn start_music(&mut self, theme: LevelTheme) {
+        self.current_theme = theme;
         if let Some(sound) = &self.music {
             play_sound(
                 sound,
                 PlaySoundParams {
                     looped: true,
-                    volume: 0.22,
+                    volume: self.current_theme.music_volume(),
                 },
             );
         }
     }
 
+    pub fn apply_theme(&mut self, theme: LevelTheme) {
+        if self.current_theme == theme {
+            return;
+        }
+
+        self.current_theme = theme;
+        if let Some(sound) = &self.music {
+            set_sound_volume(sound, self.current_theme.music_volume());
+        }
+    }
+
     pub fn play(&self, cue: AudioCue) {
+        let gain = self.current_theme.sfx_gain();
         match cue {
             AudioCue::Key => {
                 if let Some(sound) = &self.key {
@@ -43,7 +60,7 @@ impl SoundBank {
                         sound,
                         PlaySoundParams {
                             looped: false,
-                            volume: 0.30,
+                            volume: (0.30 * gain).min(1.0),
                         },
                     );
                 }
@@ -54,7 +71,7 @@ impl SoundBank {
                         sound,
                         PlaySoundParams {
                             looped: false,
-                            volume: 0.45,
+                            volume: (0.45 * gain).min(1.0),
                         },
                     );
                 }
@@ -65,7 +82,7 @@ impl SoundBank {
                         sound,
                         PlaySoundParams {
                             looped: false,
-                            volume: 0.48,
+                            volume: (0.48 * gain).min(1.0),
                         },
                     );
                 }
@@ -76,7 +93,7 @@ impl SoundBank {
                         sound,
                         PlaySoundParams {
                             looped: false,
-                            volume: 0.72,
+                            volume: (0.72 * gain).min(1.0),
                         },
                     );
                 }
@@ -87,7 +104,7 @@ impl SoundBank {
                         sound,
                         PlaySoundParams {
                             looped: false,
-                            volume: 0.60,
+                            volume: (0.60 * gain).min(1.0),
                         },
                     );
                 }
